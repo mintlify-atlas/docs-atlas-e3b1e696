@@ -1,0 +1,116 @@
+{
+  "projectType": "saas",
+  "projectName": "LORE Timeline",
+  "projectDescription": "An interactive biography engine that researches, analyzes, and visualizes anyone's life story with AI-powered timelines and contextual chat.",
+  "theme": "palm",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#5B21B6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/research-engine",
+              "features/timeline-generation",
+              "features/ai-chat",
+              "features/source-extraction"
+            ]
+          },
+          {
+            "group": "Platform",
+            "pages": [
+              "platform/architecture",
+              "platform/data-pipeline",
+              "platform/ai-models"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/deployment",
+              "guides/configuration",
+              "guides/customization"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Development",
+        "groups": [
+          {
+            "group": "Setup",
+            "pages": [
+              "development/installation",
+              "development/environment"
+            ]
+          },
+          {
+            "group": "Backend",
+            "pages": [
+              "development/convex-backend",
+              "development/database-schema",
+              "development/pipeline-phases"
+            ]
+          },
+          {
+            "group": "Frontend",
+            "pages": [
+              "development/nextjs-app",
+              "development/components",
+              "development/styling"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Convex Functions",
+            "pages": [
+              "api/persons",
+              "api/pipeline",
+              "api/llm",
+              "api/chat"
+            ]
+          },
+          {
+            "group": "Data Models",
+            "pages": [
+              "api/schema"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automated web research using Exa AI for articles, interviews, and videos",
+    "AI-powered life stage segmentation with turning points and worldview analysis",
+    "Interactive timeline visualization with media gallery and source citations",
+    "Contextual chat interface grounded in real evidence using RAG",
+    "YouTube transcript extraction and semantic search indexing",
+    "5-phase pipeline: Discover → Extract → Stage → Embed → Publish"
+  ],
+  "publicApiSurface": [
+    "api.persons.createPerson",
+    "api.persons.listRecentPersons",
+    "api.pipeline.runIngestion",
+    "api.pipeline.scoreAndSelectChunks",
+    "api.llm.embedText",
+    "api.llm.generateStructuredJson",
+    "api.llm.generateChatReply"
+  ]
+}
