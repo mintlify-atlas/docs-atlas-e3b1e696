@@ -1,0 +1,279 @@
+---
+title: Pipeline control
+description: Functions for managing the 5-phase ingestion pipeline and RAG retrieval
+---
+
+The `pipeline` module controls the execution of the 5-phase ingestion pipeline (Discover → Extract → Stage → Embed → Publish) and provides RAG-based retrieval for chat.
+
+## Mutations
+
+### bootstrapPerson
+
+Initializes a new person record with pending status and queues the first pipeline job.
+
+<ParamField path="name" type="string" required>
+  The person's full name
+</ParamField>
+
+<ParamField path="seedUrls" type="string[]" optional>
+  Optional URLs to seed the discovery phase with
+</ParamField>
+
+**Returns:** `Id<'persons'>` - The newly created person ID
+
+```typescript
+const personId = await bootstrapPerson({ 
+  name: "Steve Jobs",
+  seedUrls: ["https://stanford.edu/commencement"] 
+});
+```
+
+### startIngestion
+
+Schedules the ingestion pipeline to start immediately.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to start ingesting
+</ParamField>
+
+```typescript
+await startIngestion({ personId: "..." });
+```
+
+## Actions
+
+### runIngestion
+
+Executes the ingestion pipeline for a person. This is the core orchestrator that runs all 5 phases sequentially, with automatic chaining between phases.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to ingest
+</ParamField>
+
+<ParamField path="phase" type="string" optional>
+  Phase to start from: `"discover"`, `"extract"`, `"stage"`, `"embed"`, or `"publish"`. Defaults to `"discover"`
+</ParamField>
+
+**Phase sequence:**
+
+<Steps>
+  <Step title="Discover">
+    Generate search queries via LLM, execute searches with Exa, vet sources, store results.
+  </Step>
+  
+  <Step title="Extract">
+    Fetch full text for each source, extract YouTube transcripts, store raw content.
+  </Step>
+  
+  <Step title="Stage">
+    Generate life stages via LLM, map sources to stages, run deep research per stage.
+  </Step>
+  
+  <Step title="Embed">
+    Chunk source text, generate embeddings via OpenAI, store in vector database.
+  </Step>
+  
+  <Step title="Publish">
+    Search for stage-specific images, generate timeline cards, mark person as `"ready"`.
+  </Step>
+</Steps>
+
+```typescript
+// Start from the beginning
+await runIngestion({ personId: "..." });
+
+// Resume from a specific phase
+await runIngestion({ 
+  personId: "...",
+  phase: "embed" 
+});
+```
+
+**Error handling:**
+
+If any phase fails, the pipeline:
+1. Marks the person status as `"failed"`
+2. Marks the current job as `"failed"` with an error message
+3. Throws the error for logging
+
+You can manually resume by calling `runIngestion` with the appropriate phase.
+
+### scoreAndSelectChunks
+
+Performs semantic search over text chunks to find the most relevant evidence for a query. Used by the chat system for RAG retrieval.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to search within
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The stage to search (searches only chunks from this stage first)
+</ParamField>
+
+<ParamField path="query" type="string" required>
+  The user's query to search for
+</ParamField>
+
+<ParamField path="topK" type="number" optional>
+  Number of chunks to return. Defaults to `8`
+</ParamField>
+
+**Returns:**
+
+<ResponseField name="usedFallback" type="boolean">
+  Whether cross-stage fallback was used. `true` if the stage had fewer than `topK/2` chunks, triggering a search across all person chunks
+</ResponseField>
+
+<ResponseField name="chunks" type="array">
+  Array of chunk objects sorted by relevance (cosine similarity score, descending)
+</ResponseField>
+
+<Expandable title="Chunk object structure">
+  <ResponseField name="id" type="Id<'chunks'>">
+    Chunk ID
+  </ResponseField>
+  
+  <ResponseField name="text" type="string">
+    Chunk text content (up to 1200 characters)
+  </ResponseField>
+  
+  <ResponseField name="citation" type="string">
+    JSON string with source metadata: `{"sourceId": "...", "title": "...", "url": "...", "publishedAt": "..."}`
+  </ResponseField>
+  
+  <ResponseField name="score" type="number">
+    Cosine similarity score (0-1), where 1 is perfect match
+  </ResponseField>
+</Expandable>
+
+```typescript
+const result = await scoreAndSelectChunks({
+  personId: "...",
+  stageId: "...",
+  query: "What motivated you to start the company?",
+  topK: 8
+});
+
+// {
+//   usedFallback: false,
+//   chunks: [
+//     {
+//       id: "...",
+//       text: "I wanted to build something that...",
+//       citation: "{\"title\":\"Interview\",\"url\":\"https://...\"}",
+//       score: 0.87
+//     },
+//     ...
+//   ]
+// }
+```
+
+**Retrieval strategy:**
+
+<Tabs>
+  <Tab title="Stage-scoped (default)">
+    1. Query only chunks linked to the specified `stageId`
+    2. Compute cosine similarity between query embedding and chunk embeddings
+    3. Return top K chunks
+    
+    If fewer than `K/2` chunks are found, automatically fall back to cross-stage search.
+  </Tab>
+  
+  <Tab title="Cross-stage fallback">
+    1. Query ALL chunks for the person (across all stages)
+    2. Compute cosine similarity for each chunk
+    3. Return top K chunks
+    
+    This provides better coverage when a stage has sparse evidence.
+  </Tab>
+</Tabs>
+
+## Internal Queries
+
+These are used internally by the pipeline. They're not exposed via the public API.
+
+### getPersonInternal
+
+Fetches a person record. Used by `runIngestion`.
+
+### listSourcesInternal
+
+Lists all sources for a person.
+
+### listSourcesPageInternal
+
+Paginated source listing for large datasets.
+
+### listStagesInternal
+
+Returns all stages for a person, ordered by `order` field.
+
+### listChunksByStage
+
+Returns all chunks linked to a specific stage.
+
+### listChunksByPerson
+
+Returns all chunks for a person (used in cross-stage fallback).
+
+### listChunkSourceIds
+
+Returns unique source IDs that have already been chunked/embedded. Used for resumable ingestion.
+
+### listStageLinksForPerson
+
+Returns all source-to-stage mappings for a person.
+
+## Internal Mutations
+
+These mutations are called by actions and are not directly accessible from the client.
+
+### markPersonStatus
+
+Updates the person's status field (`"pending"`, `"processing"`, `"ready"`, or `"failed"`).
+
+### upsertJobPhase
+
+Creates or updates a job record for a specific pipeline phase.
+
+### replaceSources
+
+Replaces all sources for a person (used in the Discover phase).
+
+### addSources
+
+Appends new sources to a person's source list (used in deep research).
+
+### updateSourceText
+
+Stores extracted text, transcript, and images for a source.
+
+### replaceStages
+
+Replaces all stages for a person (used in Stage creation).
+
+### linkSourceToStage
+
+Creates a source-to-stage mapping with relevance score and rationale.
+
+### insertChunk
+
+Inserts a text chunk with its embedding into the vector database.
+
+### replaceTimelineCards
+
+Generates and stores timeline cards for all stages.
+
+### markLatestRunningJobFailed
+
+Marks the most recent running job as failed with an error message.
+
+## Source Reference
+
+See `convex/pipeline.ts` (1,600+ lines) for full implementation details, including:
+- Exa search integration
+- YouTube transcript extraction
+- LLM prompt templates for query generation, source vetting, stage creation, and source mapping
+- Text chunking and sanitization
+- Cosine similarity computation
+- Image extraction and search

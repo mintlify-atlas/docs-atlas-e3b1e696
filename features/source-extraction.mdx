@@ -1,0 +1,546 @@
+---
+title: 'Source Extraction'
+description: 'YouTube transcript extraction and web scraping that pulls full text content and images from discovered sources'
+icon: 'file-lines'
+---
+
+LORE Timeline's extraction engine converts discovered sources into structured, searchable content. This includes fetching YouTube video transcripts, scraping web pages, and extracting relevant images.
+
+## Extraction Pipeline
+
+<Steps>
+  <Step title="Classify Source Type">
+    Determine if the source is a video, article, post, or interview based on URL patterns
+  </Step>
+  
+  <Step title="Extract Content">
+    - **YouTube videos**: Fetch full transcript from captions API
+    - **Web pages**: Scrape HTML and extract clean text
+    - **Images**: Find and filter relevant photos of the person
+  </Step>
+  
+  <Step title="Clean and Sanitize">
+    Strip HTML tags, remove scripts/styles, sanitize unicode characters
+  </Step>
+  
+  <Step title="Store Structured Data">
+    Save raw text, transcript text, and image URLs separately for indexing
+  </Step>
+</Steps>
+
+## YouTube Transcript Extraction
+
+LORE extracts full transcripts from YouTube videos using the internal timedtext API:
+
+```typescript
+async function fetchYoutubeTranscript(videoId: string): Promise<string> {
+  try {
+    // Step 1: Fetch video page to extract caption track info
+    const pageResponse = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+
+    if (!pageResponse.ok) return "";
+    const pageHtml = await pageResponse.text();
+
+    // Step 2: Extract caption tracks from page source
+    const captionMatch = pageHtml.match(/"captionTracks":\s*(\[.*?\])/);
+    if (!captionMatch?.[1]) return "";
+
+    let captionTracks = JSON.parse(captionMatch[1]);
+
+    // Step 3: Prefer English, fall back to first available
+    const englishTrack = captionTracks.find(
+      (t) => t.languageCode === "en" || t.languageCode?.startsWith("en")
+    );
+    const track = englishTrack ?? captionTracks[0];
+    if (!track?.baseUrl) return "";
+
+    // Step 4: Fetch the actual transcript XML
+    const captionUrl = track.baseUrl + "&fmt=srv3";
+    const captionResponse = await fetch(captionUrl);
+    if (!captionResponse.ok) return "";
+    const captionXml = await captionResponse.text();
+
+    // Step 5: Parse XML to extract text content
+    const textSegments: string[] = [];
+    const segmentRegex = /<p[^>]*>(.*?)<\/p>/gi;
+    let match: RegExpExecArray | null;
+    
+    while ((match = segmentRegex.exec(captionXml)) !== null) {
+      const text = match[1]
+        .replace(/<[^>]+>/g, "")  // Strip nested tags
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (text) textSegments.push(text);
+    }
+
+    const transcript = textSegments.join(" ").trim();
+    // Cap at 30k chars to keep things manageable
+    return transcript.slice(0, 30000);
+  } catch {
+    return "";
+  }
+}
+```
+
+<Tabs>
+  <Tab title="Video ID Extraction">
+    ```typescript
+    function extractYoutubeId(url: string): string | null {
+      const patterns = [
+        /youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
+        /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/v\/([a-zA-Z0-9_-]{11})/,
+      ];
+      
+      for (const pattern of patterns) {
+        const match = url.match(pattern);
+        if (match?.[1]) return match[1];
+      }
+      
+      return null;
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Language Preference">
+    The transcript fetcher prioritizes English captions:
+    
+    ```typescript
+    const englishTrack = captionTracks.find(
+      (t) => t.languageCode === "en" || t.languageCode?.startsWith("en")
+    );
+    const track = englishTrack ?? captionTracks[0];
+    ```
+    
+    Falls back to the first available language if English isn't found.
+  </Tab>
+  
+  <Tab title="XML Parsing">
+    YouTube captions come in two XML formats:
+    
+    **srv3 format** (preferred):
+    ```xml
+    <p t="0" d="2000">Hello everyone</p>
+    <p t="2000" d="3000">Welcome to my channel</p>
+    ```
+    
+    **timedtext format** (fallback):
+    ```xml
+    <text start="0" dur="2.0">Hello everyone</text>
+    <text start="2.0" dur="3.0">Welcome to my channel</text>
+    ```
+    
+    The extractor handles both formats automatically.
+  </Tab>
+</Tabs>
+
+<Info>
+  **Auto-Generated Captions**: If the video doesn't have manual captions, YouTube's auto-generated transcripts are used. These are surprisingly accurate for English content.
+</Info>
+
+## Web Page Scraping
+
+For articles and web pages, LORE fetches and cleans the HTML:
+
+```typescript
+async function extractSource(
+  source: CandidateSource,
+  personName?: string,
+): Promise<{ text: string; imageUrls: string[]; transcriptText?: string }> {
+  // Handle YouTube videos
+  const ytId = extractYoutubeId(source.url);
+  if (ytId) {
+    const transcript = await fetchYoutubeTranscript(ytId);
+    return {
+      text: `${source.title}\n${source.snippet ?? ""}\nYouTube video.`,
+      imageUrls: [],
+      transcriptText: transcript || undefined,
+    };
+  }
+
+  try {
+    // Fetch web page
+    const response = await fetch(source.url, {
+      headers: {
+        "User-Agent": "TimelineResearchBot/1.0",
+      },
+    });
+    
+    if (!response.ok) {
+      return {
+        text: `${source.title}\n${source.snippet ?? ""}\nFailed to fetch full content.`,
+        imageUrls: [],
+      };
+    }
+    
+    const html = await response.text();
+    const imageUrls = extractImageUrls(html, source.url, personName);
+    const plain = stripHtml(html);
+    
+    return { 
+      text: plain.slice(0, 20000), 
+      imageUrls 
+    };
+  } catch (_error) {
+    return {
+      text: `${source.title}\n${source.snippet ?? ""}\nContent unavailable; using metadata snippet only.`,
+      imageUrls: [],
+    };
+  }
+}
+```
+
+<Note>
+  **20K Character Limit**: Web page content is capped at 20,000 characters to keep the index manageable. This captures most article content while filtering out excessive boilerplate.
+</Note>
+
+## HTML Cleaning
+
+The `stripHtml` function removes markup and normalizes text:
+
+```typescript
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")  // Remove scripts
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")    // Remove styles
+    .replace(/<[^>]+>/g, " ")                      // Remove HTML tags
+    .replace(/\s+/g, " ")                          // Normalize whitespace
+    .trim();
+}
+```
+
+## Image Extraction
+
+LORE intelligently extracts relevant images of the person:
+
+```typescript
+function extractImageUrls(
+  html: string,
+  baseUrl: string,
+  personName?: string
+): string[] {
+  const imgRegex = /<img[^>]*>/gi;
+  const urls: string[] = [];
+  const nameParts = (personName ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  let match: RegExpExecArray | null;
+
+  while ((match = imgRegex.exec(html)) !== null) {
+    const fullTag = match[0];
+
+    // Extract src
+    const srcMatch = fullTag.match(/src=["']([^"']+)["']/i);
+    if (!srcMatch?.[1]) continue;
+    const src = srcMatch[1];
+
+    // Skip data URIs, tracking pixels, icons, SVGs
+    if (src.startsWith("data:")) continue;
+    if (src.includes("1x1") || src.includes("pixel") || src.includes("tracking")) continue;
+    if (src.endsWith(".svg") || src.includes("/icon")) continue;
+    if (src.includes("logo") || src.includes("favicon") || src.includes("avatar")) continue;
+    if (src.includes("banner") || src.includes("ad-") || src.includes("sprite")) continue;
+    if (src.includes("button") || src.includes("arrow") || src.includes("widget")) continue;
+
+    // Skip small images (icons, thumbnails under 150px)
+    const widthMatch = fullTag.match(/width=["']?(\d+)/i);
+    if (widthMatch && parseInt(widthMatch[1]) < 150) continue;
+    const heightMatch = fullTag.match(/height=["']?(\d+)/i);
+    if (heightMatch && parseInt(heightMatch[1]) < 100) continue;
+
+    // Check if image is likely related to the person via alt text or URL
+    const altMatch = fullTag.match(/alt=["']([^"']*)["']/i);
+    const altText = (altMatch?.[1] ?? "").toLowerCase();
+
+    let relevant = false;
+    if (nameParts.length > 0) {
+      const nameInAlt = nameParts.some((part) => altText.includes(part));
+      const nameInSrc = nameParts.some((part) => src.toLowerCase().includes(part));
+      relevant = nameInAlt || nameInSrc;
+    }
+
+    // Also accept images from known photo/media patterns
+    if (!relevant && nameParts.length > 0) {
+      const isPhotoPattern =
+        src.includes("photo") ||
+        src.includes("portrait") ||
+        src.includes("headshot") ||
+        src.includes("profile") ||
+        altText.includes("photo") ||
+        altText.includes("portrait");
+      if (!isPhotoPattern) continue;
+    }
+
+    // Resolve relative URLs
+    let absoluteUrl = src;
+    if (src.startsWith("//")) {
+      absoluteUrl = "https:" + src;
+    } else if (src.startsWith("/")) {
+      try {
+        const base = new URL(baseUrl);
+        absoluteUrl = base.origin + src;
+      } catch {
+        continue;
+      }
+    } else if (!src.startsWith("http")) {
+      continue;
+    }
+
+    urls.push(absoluteUrl);
+  }
+  
+  // Return up to 4 unique, relevant images
+  return [...new Set(urls)].slice(0, 4);
+}
+```
+
+<Accordion title="Image Filtering Logic">
+  The extractor applies multiple filters to ensure quality:
+
+  <Tabs>
+    <Tab title="Size Filters">
+      - Minimum width: 150px
+      - Minimum height: 100px
+      - Excludes 1x1 tracking pixels
+    </Tab>
+    
+    <Tab title="Type Filters">
+      Excludes:
+      - SVG icons
+      - Logos and favicons
+      - Banners and ads
+      - Buttons and UI elements
+      - Sprites and widgets
+    </Tab>
+    
+    <Tab title="Relevance Filters">
+      Requires:
+      - Person's name in alt text OR
+      - Person's name in image URL OR
+      - Photo-related keywords ("photo", "portrait", "headshot", "profile")
+    </Tab>
+  </Tabs>
+</Accordion>
+
+## Exa Image Search
+
+For additional images, LORE uses Exa's image search:
+
+```typescript
+async function searchPersonImages(name: string, stageTitle?: string): Promise<string[]> {
+  if (!EXA_API_KEY) return [];
+
+  const query = stageTitle
+    ? `${name} photo ${stageTitle.replace(/^\[.*?\]\s*-\s*/, "")}`
+    : `${name} photo portrait`;
+
+  try {
+    const response = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        "x-api-key": EXA_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        numResults: 5,
+        type: "auto",
+        text: false,
+      }),
+    });
+    
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    const images: string[] = [];
+    
+    for (const result of data.results ?? []) {
+      if (result.image && result.image.startsWith("http")) {
+        images.push(result.image);
+      }
+    }
+    
+    return [...new Set(images)].slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+```
+
+<Info>
+  **Stage-Specific Images**: When extracting images for a specific life stage, the query includes the era title to find photos from that period.
+</Info>
+
+## Text Sanitization
+
+Before storing, text is sanitized to prevent JSON serialization errors:
+
+```typescript
+function sanitizeText(raw: string): string {
+  return raw
+    // Remove incomplete unicode escapes like \u00, \u0, \u
+    .replace(/\\u[0-9a-fA-F]{0,3}(?![0-9a-fA-F])/g, "")
+    // Remove null bytes and control characters (keep newlines/tabs)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+```
+
+## Chunking for Embeddings
+
+Extracted text is split into 1200-character chunks for vector indexing:
+
+```typescript
+function splitChunks(text: string, maxChars = 1200): string[] {
+  const clean = sanitizeText(text).replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  
+  const out: string[] = [];
+  let cursor = 0;
+  
+  while (cursor < clean.length) {
+    const end = Math.min(clean.length, cursor + maxChars);
+    out.push(clean.slice(cursor, end));
+    cursor = end;
+  }
+  
+  return out;
+}
+```
+
+<Note>
+  **Chunk Size**: 1200 characters is optimal for semantic search - large enough to capture context, small enough to be specific.
+</Note>
+
+## Batch Embedding
+
+Chunks are embedded in batches of 20 for efficiency:
+
+```typescript
+const CHUNKS_PER_SOURCE = 10;
+const BATCH_SIZE = 20;
+
+for (const source of sources) {
+  const text = sanitizeText(source.rawText ?? source.transcriptText ?? "");
+  const chunks = splitChunks(text).slice(0, CHUNKS_PER_SOURCE);
+  
+  for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+    const batchTexts = chunks.slice(i, i + BATCH_SIZE);
+    
+    // Batch embed multiple texts in one API call
+    const embeddings = await ctx.runAction(api.llm.embedTextBatch, {
+      texts: batchTexts,
+    });
+    
+    for (let j = 0; j < batchTexts.length; j++) {
+      await ctx.runMutation(internal.pipeline.insertChunk, {
+        personId,
+        sourceId: source._id,
+        stageId,
+        text: batchTexts[j],
+        embedding: embeddings[j] ?? [],
+        citation: JSON.stringify({
+          sourceId: String(source._id),
+          title: sanitizeText(source.title),
+          url: source.url,
+          publishedAt: source.publishedAt,
+        }),
+      });
+    }
+  }
+}
+```
+
+<Tabs>
+  <Tab title="OpenAI Embedding">
+    ```typescript
+    export const embedTextBatch = action({
+      args: { texts: v.array(v.string()) },
+      handler: async (_ctx, args) => {
+        const response = await fetch("https://api.openai.com/v1/embeddings", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "text-embedding-3-small",
+            input: args.texts,
+          }),
+        });
+
+        const data = await response.json();
+        const sorted = data.data.sort((a, b) => a.index - b.index);
+        return sorted.map((d) => d.embedding);
+      },
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Embedding Model">
+    LORE uses OpenAI's `text-embedding-3-small` model:
+    - **Dimensions**: 1536
+    - **Cost**: $0.00002 per 1K tokens
+    - **Speed**: ~1000 texts/second in batches
+    - **Quality**: High semantic accuracy
+  </Tab>
+</Tabs>
+
+## What You See
+
+As a user, the extraction process is invisible but powers your experience:
+
+### During Processing
+
+You see progress indicators:
+```
+✓ Discover   (10 sources found)
+⟳ Extract    (Processing 7 of 10...)
+- Stage      (Pending)
+- Embed      (Pending)
+- Publish    (Pending)
+```
+
+### In the Timeline
+
+Extracted content appears as:
+
+<CardGroup cols={2}>
+  <Card title="Video Transcripts" icon="youtube">
+    Full searchable text from YouTube talks and interviews
+  </Card>
+  <Card title="Article Content" icon="newspaper">
+    Clean text from web articles and blog posts
+  </Card>
+  <Card title="Quote Cards" icon="quote-left">
+    Extracted quotes displayed as visual cards
+  </Card>
+  <Card title="Stage Images" icon="image">
+    Relevant photos from each era of their life
+  </Card>
+</CardGroup>
+
+### In Chat
+
+Extracted content powers AI responses:
+- Transcript text enables quoting from video interviews
+- Article content grounds factual claims
+- Citations link back to original sources
+
+<Tip>
+  **Transcript Search**: When you ask "What did they say about X?", the AI can search through video transcripts to find exact quotes from talks and interviews.
+</Tip>
+
+---
+
+<Note>
+  Source extraction runs automatically in the background. The system handles retries, rate limits, and graceful fallbacks when content is unavailable.
+</Note>

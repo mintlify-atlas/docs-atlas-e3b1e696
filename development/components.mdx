@@ -1,0 +1,671 @@
+---
+title: React Components
+description: Component architecture, props, and usage patterns
+icon: 'cube'
+---
+
+## Overview
+
+LORE Timeline's component library is built with **React 19**, **TypeScript**, and **Framer Motion** for animations. All components are located in the `components/` directory.
+
+## Component Directory
+
+```
+components/
+├── TimelineScroller.tsx    # Main timeline container with TOC
+├── StageChapter.tsx        # Individual life stage section
+├── TimelineCard.tsx        # Card variants (moment, quote, turning point, etc.)
+├── MediaGallery.tsx        # Staggered image/video grid with parallax
+├── ChatPanel.tsx           # Era-specific chat interface
+├── ProgressTracker.tsx     # Pipeline progress indicator
+├── SourceDrawer.tsx        # Source citations drawer
+└── ConvexClientProvider.tsx # Convex provider wrapper
+```
+
+## Core Components
+
+### TimelineScroller
+
+The main timeline container that orchestrates the entire person detail view.
+
+<CodeGroup>
+```tsx TimelineScroller.tsx (structure)
+export function TimelineScroller({
+  personId,
+  personName,
+}: {
+  personId: Id<"persons">;
+  personName: string;
+}) {
+  const timeline = useQuery(api.persons.getTimeline, { personId });
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [chatStageId, setChatStageId] = useState<Id<"stages"> | null>(null);
+
+  // IntersectionObserver for active chapter tracking
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const idx = Number(entry.target.getAttribute("data-stage-index"));
+            setActiveIndex(idx);
+          }
+        }
+      },
+      { rootMargin: "-30% 0px -60% 0px", threshold: 0 }
+    );
+
+    for (const [, el] of chapterRefs.current) {
+      observer.observe(el);
+    }
+
+    return () => observer.disconnect();
+  }, [timeline]);
+
+  return (
+    <div className="lg:grid lg:grid-cols-[200px_1fr] lg:gap-8">
+      {/* Sticky TOC Sidebar */}
+      <nav>
+        {timeline.map((entry, index) => (
+          <button onClick={() => scrollToChapter(index)}>
+            {entry.stage.title}
+          </button>
+        ))}
+      </nav>
+
+      {/* Timeline Spine + Chapters */}
+      <div className="timeline-spine">
+        {timeline.map((entry, index) => (
+          <StageChapter
+            key={entry.stage._id}
+            index={index}
+            stage={entry.stage}
+            cards={entry.cards}
+            onOpenChat={() => setChatStageId(entry.stage._id)}
+          />
+        ))}
+      </div>
+
+      {/* Chat Panel */}
+      {chatStageId && (
+        <ChatPanel
+          personId={personId}
+          stageId={chatStageId}
+          onClose={() => setChatStageId(null)}
+        />
+      )}
+    </div>
+  );
+}
+```
+</CodeGroup>
+
+#### Key Features
+
+<CardGroup cols={2}>
+  <Card title="Scroll Tracking" icon="eye">
+    Uses IntersectionObserver to highlight the active chapter in the TOC
+  </Card>
+  
+  <Card title="Ref Management" icon="anchor">
+    Maintains a Map of chapter refs for programmatic scrolling
+  </Card>
+  
+  <Card title="Chat State" icon="message-circle">
+    Manages chat panel visibility with stage-specific context
+  </Card>
+  
+  <Card title="Responsive Layout" icon="layout">
+    Desktop: sidebar + timeline. Mobile: full-width timeline only
+  </Card>
+</CardGroup>
+
+### StageChapter
+
+Represents a single life stage (era) in the timeline.
+
+<CodeGroup>
+```tsx StageChapter.tsx (structure)
+export const StageChapter = forwardRef<HTMLElement, StageChapterProps>(
+  function StageChapter(
+    { index, stage, cards, personId, personName, isActive, onOpenChat },
+    ref
+  ) {
+    const [showSources, setShowSources] = useState(false);
+
+    // Parse title: "[19-24] - Startup Operator: Loopt Years"
+    const titleMatch = stage.title.match(/^\[(\d+-\d+)\]\s*-\s*(.+)$/);
+    const ageBadge = titleMatch?.[1] ?? `${stage.ageStart}–${stage.ageEnd}`;
+    const titleText = titleMatch?.[2] ?? stage.title;
+
+    // Sort cards by type for layout
+    const momentCards = cards.filter((c) => c.type === "moment");
+    const quoteCards = cards.filter((c) => c.type === "quote");
+    const turningCards = cards.filter((c) => c.type === "turning_point");
+    const mediaGalleryItems = cards.filter(
+      (c) => c.type === "image" || c.type === "video"
+    );
+
+    return (
+      <section ref={ref} data-stage-index={index}>
+        {/* Spine dot indicator */}
+        <div className={cn("spine-dot", isActive && "spine-dot--active")} />
+
+        {/* Chapter header */}
+        <h2 className="chapter-header">{titleText}</h2>
+
+        {/* Era summary */}
+        <p>{stage.eraSummary}</p>
+
+        {/* Worldview quote */}
+        <blockquote className="speech-bubble">
+          "{stage.worldviewSummary}"
+        </blockquote>
+
+        {/* Cards grid */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          {momentCards.map((card) => <TimelineCard card={card} />)}
+          {turningCards.map((card) => <TimelineCard card={card} />)}
+          {quoteCards.map((card) => <TimelineCard card={card} />)}
+        </div>
+
+        {/* Media gallery */}
+        {mediaGalleryItems.length > 0 && (
+          <MediaGallery items={mediaGalleryItems} />
+        )}
+
+        {/* Action buttons */}
+        <button onClick={onOpenChat}>Chat in this era</button>
+        <button onClick={() => setShowSources(!showSources)}>
+          View sources
+        </button>
+      </section>
+    );
+  }
+);
+```
+</CodeGroup>
+
+#### Props
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `index` | `number` | Stage index for scroll tracking |
+| `stage` | `Stage` | Stage data (title, dates, summary, worldview) |
+| `cards` | `Card[]` | Timeline cards for this stage |
+| `personId` | `Id<"persons">` | Person document ID |
+| `personName` | `string` | Person's name |
+| `isActive` | `boolean` | Whether this chapter is currently in viewport |
+| `onOpenChat` | `() => void` | Callback to open chat panel |
+
+### TimelineCard
+
+Renders different card types with appropriate styling.
+
+<Tabs>
+  <Tab title="Moment Card">
+    ```tsx
+    function MomentCard({ card }: { card: Card }) {
+      return (
+        <div className="comic-panel p-5">
+          <h3 className="text-balance text-xl">{card.headline}</h3>
+          <p className="mt-2 text-sm">{card.body}</p>
+        </div>
+      );
+    }
+    ```
+    Standard event or milestone from the person's life.
+  </Tab>
+  
+  <Tab title="Quote Card">
+    ```tsx
+    function QuoteCard({ card }: { card: Card }) {
+      return (
+        <div className="speech-bubble">
+          <p className="text-xs uppercase text-[var(--muted)]">
+            {card.headline}
+          </p>
+          <p className="text-sm italic">
+            "{card.body}"
+          </p>
+        </div>
+      );
+    }
+    ```
+    Direct quote with source label in speech bubble styling.
+  </Tab>
+  
+  <Tab title="Turning Point">
+    ```tsx
+    function TurningPointCard({ card }: { card: Card }) {
+      return (
+        <div className="comic-panel comic-panel--accent p-5">
+          <div className="flex items-center gap-2">
+            <StarIcon />
+            <h3 className="font-bold uppercase text-[var(--accent)]">
+              {card.headline}
+            </h3>
+          </div>
+          <p className="text-sm">{card.body}</p>
+        </div>
+      );
+    }
+    ```
+    Major life event with accent border and star icon.
+  </Tab>
+  
+  <Tab title="Media Card">
+    ```tsx
+    function MediaCard({ card }: { card: Card }) {
+      const url = card.mediaRef ?? card.body;
+      return (
+        <div className="comic-panel flex items-start gap-3 p-4">
+          <ExternalLinkIcon />
+          <div>
+            <h3 className="text-sm font-semibold">{card.headline}</h3>
+            <a href={url} target="_blank" className="text-xs text-[var(--accent)]">
+              {url}
+            </a>
+          </div>
+        </div>
+      );
+    }
+    ```
+    External link with icon and truncated URL.
+  </Tab>
+</Tabs>
+
+### ChatPanel
+
+Fixed-position chat interface for era-specific conversations.
+
+<CodeGroup>
+```tsx ChatPanel.tsx (structure)
+export function ChatPanel({
+  personId,
+  personName,
+  stageId,
+  stageTitle,
+  onClose,
+}: ChatPanelProps) {
+  const clientId = useClientId();
+  const chatData = useQuery(api.persons.getChatSessionMessages, {
+    personId,
+    stageId,
+    clientId: clientId || undefined,
+  });
+  const sendChat = useAction(api.persons.sendStageChat);
+
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
+
+  // Escape key to close
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || sending) return;
+
+    setSending(true);
+    setInput("");
+    await sendChat({
+      personId,
+      stageId,
+      message: text,
+      sessionId: sessionId ?? undefined,
+      clientId: clientId || undefined,
+    });
+    setSending(false);
+  };
+
+  return (
+    <motion.div
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      className="fixed inset-y-0 right-0 z-40 flex w-full sm:w-[420px] flex-col bg-[var(--panel)]"
+    >
+      {/* Header */}
+      <div className="border-b-2 px-4 py-3">
+        <button onClick={onClose}>Close</button>
+        <p className="font-semibold">{personName}</p>
+        <p className="text-xs text-[var(--muted)]">{stageTitle}</p>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        {messages.map((msg) => (
+          <ChatMessage key={msg._id} message={msg} />
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <form onSubmit={handleSubmit} className="border-t-2 px-4 py-3">
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmit(e);
+            }
+          }}
+          placeholder={`Ask about ${personName}...`}
+        />
+        <button type="submit" disabled={sending || !input.trim()}>
+          Send
+        </button>
+      </form>
+    </motion.div>
+  );
+}
+```
+</CodeGroup>
+
+#### Chat Features
+
+<CardGroup cols={2}>
+  <Card title="Source Citations" icon="link">
+    Each assistant message includes expandable source links with inline citations
+  </Card>
+  
+  <Card title="Fallback Warning" icon="alert-triangle">
+    Displays banner when cross-stage retrieval is used due to limited evidence
+  </Card>
+  
+  <Card title="Auto-Scroll" icon="arrow-down">
+    Automatically scrolls to bottom when new messages arrive
+  </Card>
+  
+  <Card title="Keyboard Shortcuts" icon="keyboard">
+    - **Enter**: Send message
+    - **Shift+Enter**: New line
+    - **Escape**: Close panel
+  </Card>
+</CardGroup>
+
+### MediaGallery
+
+Staggered masonry grid with parallax scroll effects.
+
+<CodeGroup>
+```tsx MediaGallery.tsx (structure)
+export function MediaGallery({
+  items,
+  className,
+}: {
+  items: MediaItem[];
+  className?: string;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const { scrollYProgress } = useScroll({
+    target: containerRef,
+    offset: ["start end", "end start"],
+  });
+
+  // Gentle parallax: gallery drifts up as you scroll past
+  const rawY = useTransform(scrollYProgress, [0, 1], [20, -20]);
+  const y = useSpring(rawY, { stiffness: 80, damping: 20 });
+
+  const columns = distributeToColumns(items);
+
+  return (
+    <div ref={containerRef} className={className}>
+      <p className="mb-4 text-xs font-semibold uppercase">
+        Photos & Videos
+      </p>
+
+      <motion.div
+        style={{ y }}
+        className="grid grid-cols-2 sm:grid-cols-3 gap-3"
+      >
+        {columns.map((column, colIdx) => (
+          <div key={colIdx} className="flex flex-col gap-3">
+            {column.map((item, itemIdx) => (
+              <StaggeredItem
+                key={item._id}
+                item={item}
+                index={colIdx * 4 + itemIdx}
+                colIndex={colIdx}
+              />
+            ))}
+          </div>
+        ))}
+      </motion.div>
+    </div>
+  );
+}
+```
+</CodeGroup>
+
+#### Layout Algorithm
+
+1. **Distribute items** across 2-3 columns based on count
+2. **Stagger heights** using alternating aspect ratios: `3/4`, `square`, `4/3`, etc.
+3. **Offset columns** vertically for visual rhythm (middle column starts higher)
+4. **Apply parallax** to entire grid as container scrolls into view
+
+### ProgressTracker
+
+Displays real-time pipeline progress during timeline generation.
+
+<CodeGroup>
+```tsx ProgressTracker.tsx (structure)
+export function ProgressTracker({
+  jobs,
+  personName,
+}: {
+  jobs: Job[];
+  personName: string;
+}) {
+  const jobMap = new Map(jobs.map((j) => [j.phase, j]));
+
+  return (
+    <div className="comic-panel p-6">
+      <h2 className="chapter-header">Building Timeline: {personName}</h2>
+
+      <div className="space-y-4">
+        {PHASE_ORDER.map((phase, index) => {
+          const job = jobMap.get(phase);
+          const status = job?.status ?? "queued";
+          const progress = job?.progress ?? 0;
+
+          return (
+            <div
+              key={phase}
+              className={cn(
+                "flex items-start gap-4 rounded-xl border-2 p-4",
+                status === "running" && "border-[var(--accent)] bg-white",
+                status === "done" && "border-[var(--success)] bg-white",
+                status === "failed" && "border-red-500 bg-red-50"
+              )}
+            >
+              {/* Step number or checkmark */}
+              <div className="size-9 rounded-full border-2">
+                {status === "done" ? <CheckIcon /> : index + 1}
+              </div>
+
+              {/* Content */}
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{PHASE_META[phase].label}</span>
+                  {status === "running" && (
+                    <span className="text-sm text-[var(--accent)]">
+                      {progress}%
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-[var(--muted)]">
+                  {PHASE_META[phase].description}
+                </p>
+
+                {/* Progress bar */}
+                {status === "running" && (
+                  <div className="mt-2 h-1.5 rounded-full bg-[var(--paper)]">
+                    <motion.div
+                      className="h-full rounded-full bg-[var(--accent)]"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${progress}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+```
+</CodeGroup>
+
+## Utility Components
+
+### ConvexClientProvider
+
+Wraps the app with Convex real-time data provider.
+
+```tsx ConvexClientProvider.tsx
+"use client";
+
+import { ReactNode } from "react";
+import { ConvexProvider, ConvexReactClient } from "convex/react";
+
+const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+export default function ConvexClientProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  return <ConvexProvider client={convex}>{children}</ConvexProvider>;
+}
+```
+
+## Helper Utilities
+
+### `cn()` - Class Name Merger
+
+```tsx lib/cn.ts
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+```
+
+**Usage:**
+
+```tsx
+<div className={cn(
+  "base-class",
+  isActive && "active-class",
+  "text-sm"
+)} />
+```
+
+Combines `clsx` for conditional classes with `tailwind-merge` to resolve conflicting Tailwind utilities.
+
+## Animation Patterns
+
+All animations use **Framer Motion** (`motion` package).
+
+### Fade In on Scroll
+
+```tsx
+<motion.div
+  initial={{ opacity: 0, y: 20 }}
+  whileInView={{ opacity: 1, y: 0 }}
+  viewport={{ once: true, margin: "-40px" }}
+  transition={{ duration: 0.3, ease: "easeOut" }}
+>
+  Content
+</motion.div>
+```
+
+### Slide In Panel
+
+```tsx
+<motion.div
+  initial={{ x: "100%" }}
+  animate={{ x: 0 }}
+  exit={{ x: "100%" }}
+  transition={{ duration: 0.2, ease: "easeOut" }}
+>
+  Panel content
+</motion.div>
+```
+
+### Parallax Scroll
+
+```tsx
+const { scrollYProgress } = useScroll({
+  target: containerRef,
+  offset: ["start end", "end start"],
+});
+
+const y = useTransform(scrollYProgress, [0, 1], [20, -20]);
+
+<motion.div style={{ y }}>Content</motion.div>
+```
+
+## TypeScript Patterns
+
+### Convex ID Types
+
+```tsx
+import type { Id } from "@/convex/_generated/dataModel";
+
+type Props = {
+  personId: Id<"persons">;
+  stageId: Id<"stages">;
+};
+```
+
+### forwardRef with Generic Props
+
+```tsx
+export const StageChapter = forwardRef<HTMLElement, StageChapterProps>(
+  function StageChapter(props, ref) {
+    return <section ref={ref}>...</section>;
+  }
+);
+```
+
+## Best Practices
+
+1. **Use `"use client"` directive** for all interactive components
+2. **Memoize callbacks** with `useCallback` to prevent unnecessary re-renders
+3. **Handle loading states** - Always show skeleton UI while `useQuery` returns `undefined`
+4. **Clean up effects** - Return cleanup functions from `useEffect`
+5. **Optimize animations** - Use `viewport={{ once: true }}` to prevent re-triggering
+6. **Type safety** - Import types from Convex generated files
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Next.js App" icon="folder-tree" href="/development/nextjs-app">
+    Learn about app structure and routing
+  </Card>
+  
+  <Card title="Styling" icon="palette" href="/development/styling">
+    Explore Tailwind CSS and design system
+  </Card>
+</CardGroup>

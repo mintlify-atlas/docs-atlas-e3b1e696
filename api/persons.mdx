@@ -1,0 +1,307 @@
+---
+title: Person management
+description: Convex functions for creating, querying, and managing person records and timelines
+---
+
+The `persons` module provides all the functions needed to manage person records, query timelines, retrieve sources, and handle chat interactions.
+
+## Mutations
+
+### createPerson
+
+Creates a new person record and starts the ingestion pipeline. If a person with the same name already exists (case-insensitive), returns the existing person instead.
+
+<ParamField path="name" type="string" required>
+  The full name of the person to research
+</ParamField>
+
+<ParamField path="seedUrls" type="string[]" optional>
+  Optional array of URLs to seed the research with
+</ParamField>
+
+**Returns:**
+
+<ResponseField name="personId" type="Id<'persons'>">
+  The ID of the created or existing person
+</ResponseField>
+
+<ResponseField name="existing" type="boolean">
+  Whether this person already existed in the database
+</ResponseField>
+
+```typescript
+const result = await createPerson({ 
+  name: "Sam Altman",
+  seedUrls: ["https://example.com/interview"] 
+});
+// { personId: "...", existing: false }
+```
+
+### reingestPerson
+
+Re-runs the ingestion pipeline for an existing person, optionally starting from a specific phase.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The ID of the person to reingest
+</ParamField>
+
+<ParamField path="fromPhase" type="string" optional>
+  Phase to resume from: `"discover"`, `"extract"`, `"stage"`, `"embed"`, or `"publish"`. Defaults to `"discover"`
+</ParamField>
+
+```typescript
+await reingestPerson({ 
+  personId: "...",
+  fromPhase: "stage" 
+});
+```
+
+### createChatSession
+
+Creates a new chat session scoped to a person and stage.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to chat with
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The life stage/era for the conversation
+</ParamField>
+
+<ParamField path="clientId" type="string" optional>
+  Optional client identifier for session isolation
+</ParamField>
+
+**Returns:** `Id<'chatSessions'>` - The new session ID
+
+### appendChatMessage
+
+Appends a message to an existing chat session.
+
+<ParamField path="sessionId" type="Id<'chatSessions'>" required>
+  The session to append to
+</ParamField>
+
+<ParamField path="role" type="'user' | 'assistant'" required>
+  Message role
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  Message text content
+</ParamField>
+
+<ParamField path="citations" type="string[]" required>
+  Array of source citations for this message
+</ParamField>
+
+<ParamField path="usedFallback" type="boolean" required>
+  Whether cross-stage fallback retrieval was used
+</ParamField>
+
+## Queries
+
+### listRecentPersons
+
+Returns a list of recently created persons, sorted by creation time (newest first).
+
+<ParamField path="limit" type="number" optional>
+  Maximum number of results. Defaults to `20`
+</ParamField>
+
+```typescript
+const people = await listRecentPersons({ limit: 50 });
+```
+
+### getPerson
+
+Retrieves a person record along with all their pipeline job statuses.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person ID to retrieve
+</ParamField>
+
+**Returns:**
+
+<ResponseField name="person" type="object">
+  The person record with fields: `name`, `slug`, `status`, `birthDate`, `createdAt`, `updatedAt`
+</ResponseField>
+
+<ResponseField name="jobs" type="array">
+  Array of pipeline jobs ordered by creation time
+</ResponseField>
+
+### getTimeline
+
+Returns the complete timeline for a person, including all stages and their associated timeline cards.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person whose timeline to retrieve
+</ParamField>
+
+**Returns:** Array of stage objects, each containing:
+
+<ResponseField name="stage" type="object">
+  Stage metadata: `title`, `ageStart`, `ageEnd`, `dateStart`, `dateEnd`, `eraSummary`, `worldviewSummary`, `turningPoints`, `confidence`
+</ResponseField>
+
+<ResponseField name="cards" type="array">
+  Timeline cards for this stage, sorted by `order`. Each card has: `type`, `headline`, `body`, `mediaRef`
+</ResponseField>
+
+```typescript
+const timeline = await getTimeline({ personId: "..." });
+// [
+//   { 
+//     stage: { title: "[18-24] - Early Builder", ... },
+//     cards: [{ type: "moment", headline: "...", ... }]
+//   },
+//   ...
+// ]
+```
+
+### getStageSources
+
+Retrieves all sources mapped to a specific stage, sorted by relevance.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person ID
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The stage ID
+</ParamField>
+
+**Returns:** Array of source objects with:
+
+<ResponseField name="id" type="Id<'sources'>">
+  Source ID
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Source title
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  Source URL
+</ResponseField>
+
+<ResponseField name="type" type="string">
+  One of: `"article"`, `"video"`, `"post"`, `"interview"`, `"other"`
+</ResponseField>
+
+<ResponseField name="relevance" type="number">
+  Relevance score (0-1)
+</ResponseField>
+
+<ResponseField name="rationale" type="string">
+  LLM-generated explanation of why this source maps to this stage
+</ResponseField>
+
+<ResponseField name="preview" type="string">
+  First 260 characters of the source text
+</ResponseField>
+
+### getChatSessionMessages
+
+Retrieves all messages for a chat session.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person ID
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The stage ID
+</ParamField>
+
+<ParamField path="clientId" type="string" optional>
+  Client identifier for session lookup
+</ParamField>
+
+**Returns:**
+
+<ResponseField name="sessionId" type="Id<'chatSessions'> | null">
+  The session ID, or `null` if no session exists
+</ResponseField>
+
+<ResponseField name="messages" type="array">
+  Array of message objects sorted by creation time
+</ResponseField>
+
+## Actions
+
+### sendStageChat
+
+Sends a chat message and generates an AI response grounded in the person's life during the specified stage.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to chat with
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The life stage/era for the conversation
+</ParamField>
+
+<ParamField path="message" type="string" required>
+  The user's message
+</ParamField>
+
+<ParamField path="sessionId" type="Id<'chatSessions'>" optional>
+  Existing session ID, or omit to create/lookup a session
+</ParamField>
+
+<ParamField path="clientId" type="string" optional>
+  Client identifier for session isolation
+</ParamField>
+
+**Returns:**
+
+<ResponseField name="sessionId" type="Id<'chatSessions'>">
+  The session ID (created or existing)
+</ResponseField>
+
+<ResponseField name="answer" type="string">
+  The AI-generated response in the person's voice
+</ResponseField>
+
+<ResponseField name="citations" type="string[]">
+  Array of source citations (up to 4)
+</ResponseField>
+
+<ResponseField name="usedFallback" type="boolean">
+  Whether cross-stage retrieval was used due to sparse stage evidence
+</ResponseField>
+
+```typescript
+const result = await sendStageChat({
+  personId: "...",
+  stageId: "...",
+  message: "What were you thinking when you started Y Combinator?",
+  clientId: "user-abc"
+});
+// { 
+//   sessionId: "...",
+//   answer: "I wanted to...",
+//   citations: ["Interview with...— https://..."],
+//   usedFallback: false
+// }
+```
+
+### deletePerson
+
+Deletes a person and all associated data (sources, stages, chunks, jobs, chat sessions, etc.). Uses batching to handle large datasets.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to delete
+</ParamField>
+
+<Warning>
+This operation is irreversible and deletes all data associated with the person.
+</Warning>
+
+```typescript
+await deletePerson({ personId: "..." });
+```
+
+## Source Reference
+
+See `convex/persons.ts` in the source repository for full implementation details.

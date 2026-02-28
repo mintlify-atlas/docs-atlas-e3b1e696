@@ -1,0 +1,344 @@
+---
+title: 'Timeline Generation'
+description: 'AI-powered life stage segmentation that breaks a biography into 3-7 eras with summaries, turning points, and worldview shifts'
+icon: 'timeline'
+---
+
+LORE Timeline's AI automatically segments a person's life into meaningful eras based on age ranges, major transitions, and worldview shifts. This creates an interactive, scrollable biography divided into distinct chapters.
+
+## Stage Creation Process
+
+<Steps>
+  <Step title="Gather Source Digest">
+    Compile text samples from the first 30 discovered sources (up to 1000 characters each)
+  </Step>
+  
+  <Step title="LLM Analysis">
+    The AI analyzes biographical patterns, major transitions, and chronological markers to identify natural life divisions
+  </Step>
+  
+  <Step title="Generate 3-7 Stages">
+    Create life stages with age ranges, titles, summaries, worldview descriptions, and turning points
+  </Step>
+  
+  <Step title="Map Sources to Stages">
+    Each discovered source is mapped to its most relevant era using semantic analysis
+  </Step>
+  
+  <Step title="Deep Research Per Stage">
+    Run era-specific searches to discover additional content from each period
+  </Step>
+</Steps>
+
+## Stage Structure
+
+Each life stage contains rich metadata that powers the interactive timeline:
+
+<Tabs>
+  <Tab title="Basic Info">
+    ```typescript
+    {
+      order: 0,                           // Stage sequence
+      title: "[18-24] - Startup Operator: Early Builder",
+      ageStart: 18,
+      ageEnd: 24,
+      dateStart: "2005-01-01",
+      dateEnd: "2011-12-31"
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Era Summary">
+    ```typescript
+    {
+      eraSummary: `Co-founded Loopt, a location-based social 
+        networking company. Moved to Silicon Valley after 
+        dropping out of Stanford. Learned mobile development, 
+        fundraising, and product-market fit through hands-on 
+        building. Navigated the mobile app gold rush and 
+        eventual acquisition by Green Dot for $43.4M.`
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Worldview">
+    ```typescript
+    {
+      worldviewSummary: `Pragmatic builder mindset. Believed 
+        in rapid iteration, user feedback, and solving real 
+        problems. Developed conviction that execution matters 
+        more than ideas. Started to see patterns in what makes 
+        startups succeed or fail.`
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Turning Points">
+    ```typescript
+    {
+      turningPoints: [
+        "Dropped out of Stanford to build Loopt full-time",
+        "Raised first venture capital from Sequoia",
+        "Pivoted product strategy after initial traction",
+        "Sold Loopt to Green Dot for $43.4M",
+        "Began angel investing and advising startups"
+      ]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## LLM Prompt Strategy
+
+The stage generation uses a carefully designed prompt that prioritizes age-based segmentation:
+
+```typescript
+const stageJson = await generateJson(
+  `You create biographical life stages by age-era first, then refine 
+   with context shifts. Output strict JSON object with key 'stages'. 
+   
+   Each stage: order, title, ageStart, ageEnd, dateStart, dateEnd, 
+   eraSummary, worldviewSummary, turningPoints (array), confidence. 
+   
+   Title MUST look like '[18-24] - Startup Operator: Early Builder'. 
+   
+   Use 3-7 stages.`,
+  JSON.stringify({ person: person.name, sources: sourceDigest }),
+);
+```
+
+<Note>
+  **Age-First Segmentation**: Stages are primarily divided by age ranges (childhood, early career, mid-career, etc.) and then refined based on major life transitions and worldview shifts.
+</Note>
+
+## Stage Normalization
+
+The system normalizes LLM output to ensure data quality:
+
+```typescript
+function normalizeStageDraft(raw: Partial<StageDraft>, index: number): StageDraft {
+  const safeNumber = (value: unknown, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  const safeString = (value: unknown, fallback: string) =>
+    typeof value === "string" && value.trim() ? value.trim() : fallback;
+  const safeArray = (value: unknown) =>
+    Array.isArray(value) 
+      ? value.filter((item) => typeof item === "string" && item.trim()) 
+      : [];
+
+  const order = safeNumber(raw.order, index);
+  const ageStart = safeNumber(raw.ageStart, Math.max(0, index * 10));
+  const ageEnd = safeNumber(raw.ageEnd, ageStart + 9);
+
+  return {
+    order,
+    title: safeString(raw.title, `[${ageStart}-${ageEnd}] - Unnamed Era`),
+    ageStart,
+    ageEnd,
+    dateStart: safeString(raw.dateStart, "unknown"),
+    dateEnd: safeString(raw.dateEnd, "unknown"),
+    eraSummary: safeString(raw.eraSummary, "Biography era summary unavailable."),
+    worldviewSummary: safeString(raw.worldviewSummary, "Worldview summary unavailable."),
+    turningPoints: safeArray(raw.turningPoints).slice(0, 6),
+    confidence: safeNumber(raw.confidence, 0.5),
+  };
+}
+```
+
+## Fallback Stages
+
+If the LLM fails to generate stages or returns fewer than 3, the system uses sensible defaults:
+
+<Accordion title="Default Stage Templates">
+  ```typescript
+  const fallbackStages = [
+    {
+      order: 0,
+      title: "[0-17] - Formative Years",
+      ageStart: 0,
+      ageEnd: 17,
+      dateStart: "unknown",
+      dateEnd: "unknown",
+      eraSummary: "Early development and education period.",
+      worldviewSummary: "Values and interests begin to form.",
+      turningPoints: ["Early interests emerge"],
+      confidence: 0.52,
+    },
+    {
+      order: 1,
+      title: "[18-29] - Early Builder",
+      ageStart: 18,
+      ageEnd: 29,
+      dateStart: "unknown",
+      dateEnd: "unknown",
+      eraSummary: "Hands-on execution and identity formation through work.",
+      worldviewSummary: "Pragmatic and experimental mindset strengthens.",
+      turningPoints: ["First major role", "Early public visibility"],
+      confidence: 0.49,
+    },
+    {
+      order: 2,
+      title: "[30-45] - Institutional Influence",
+      ageStart: 30,
+      ageEnd: 45,
+      dateStart: "unknown",
+      dateEnd: "present",
+      eraSummary: "Leadership and broad strategic influence expand.",
+      worldviewSummary: "Long-horizon decision-making dominates.",
+      turningPoints: ["Leadership transition", "Broader societal influence"],
+      confidence: 0.48,
+    },
+  ];
+  ```
+</Accordion>
+
+## Source-to-Stage Mapping
+
+After creating stages, each source is mapped to its most relevant era:
+
+```typescript
+for (const source of sources) {
+  const matchJson = await generateJson(
+    `Map this source to the best stage order. Output JSON object 
+     {stageOrder:number, relevance:number, rationale:string}. 
+     stageOrder must be one of provided stages.`,
+    JSON.stringify({
+      source: {
+        title: source.title,
+        url: source.url,
+        type: source.type,
+        sample: (source.rawText ?? source.transcriptText ?? "").slice(0, 900),
+      },
+      stages: stages.map((stage) => ({
+        order: stage.order,
+        title: stage.title,
+        eraSummary: stage.eraSummary,
+      })),
+    }),
+  );
+
+  const mapped = JSON.parse(matchJson);
+  const chosenStage = stages.find((s) => s.order === mapped.stageOrder);
+
+  await linkSourceToStage({
+    stageId: chosenStage._id,
+    sourceId: source._id,
+    relevance: mapped.relevance ?? 0.5,
+    rationale: mapped.rationale ?? "Semantic era fit",
+  });
+}
+```
+
+<Info>
+  **Semantic Matching**: The LLM reads a text sample from each source and determines which life stage it best describes, ensuring accurate era attribution.
+</Info>
+
+## Turning Points Analysis
+
+Turning points capture pivotal moments that shaped the person's trajectory:
+
+<CardGroup cols={2}>
+  <Card title="Career Transitions" icon="briefcase">
+    Job changes, company founding, major promotions
+  </Card>
+  <Card title="Product Launches" icon="rocket">
+    Major releases, acquisitions, pivots
+  </Card>
+  <Card title="Personal Milestones" icon="star">
+    Marriages, relocations, health events
+  </Card>
+  <Card title="Worldview Shifts" icon="brain">
+    Philosophical changes, new convictions
+  </Card>
+</CardGroup>
+
+## Worldview Evolution
+
+The `worldviewSummary` field tracks how the person's beliefs and perspectives evolved:
+
+<Tabs>
+  <Tab title="Early Career">
+    **[18-24] - Startup Operator**
+    
+    "Pragmatic builder mindset. Believed in rapid iteration, user feedback, and solving real problems. Developed conviction that execution matters more than ideas."
+  </Tab>
+  
+  <Tab title="Leadership">
+    **[25-32] - Institutional Builder**
+    
+    "Shifted from individual execution to enabling others. Believed in backing ambitious founders and creating leverage through systems. Saw patterns in successful companies."
+  </Tab>
+  
+  <Tab title="Influence">
+    **[33-40] - Strategic Visionary**
+    
+    "Long-term thinking about technology's impact on humanity. Focused on existential questions about AI, energy, and the future. Willing to take controversial positions."
+  </Tab>
+</Tabs>
+
+## What You See
+
+As a user, the timeline generation creates your interactive biography experience:
+
+### Scrollable Timeline
+
+Each stage appears as a distinct chapter with:
+- **Age range badge**: `18-24 years old`
+- **Era title**: "Startup Operator: Early Builder"
+- **Visual spine**: Connecting line with stage markers
+- **Era summary**: Rich paragraph describing what happened
+- **Worldview card**: How their thinking evolved
+- **Turning points list**: Pivotal moments from this period
+
+### Navigation Sidebar
+
+A chapter list on desktop shows:
+```
+Chapters
+├─ 18-24: Startup Operator
+├─ 25-32: Institutional Builder
+├─ 33-40: Strategic Visionary
+└─ 41-present: Global Influence
+```
+
+### Era-Specific Chat
+
+Click any stage to chat with the person "during that era" - responses are grounded in sources from that specific period.
+
+<Tip>
+  **Time Travel**: The timeline lets you explore how a person's thinking evolved over time. Chat responses change based on which era you're in, reflecting their worldview from that period.
+</Tip>
+
+## Example: Sam Altman Timeline
+
+Here's what a generated timeline might look like:
+
+<Accordion title="Stage 1: [18-24] - Startup Operator: Early Builder">
+  **Era Summary**: Co-founded Loopt, a location-based social networking company. Moved to Silicon Valley after dropping out of Stanford. Learned mobile development, fundraising, and product-market fit through hands-on building.
+
+  **Worldview**: Pragmatic builder mindset. Believed in rapid iteration, user feedback, and solving real problems. Developed conviction that execution matters more than ideas.
+
+  **Turning Points**:
+  - Dropped out of Stanford to build Loopt full-time
+  - Raised first venture capital from Sequoia
+  - Sold Loopt to Green Dot for $43.4M
+  - Began angel investing and advising startups
+</Accordion>
+
+<Accordion title="Stage 2: [25-32] - Institutional Builder: Y Combinator">
+  **Era Summary**: Joined Y Combinator as a part-time partner, then became president. Scaled YC from 40 companies/year to 200+. Worked directly with hundreds of founders, developed strong views on what makes startups succeed.
+
+  **Worldview**: Shifted from individual execution to enabling others. Believed in backing ambitious founders and creating leverage through systems. Saw patterns in successful companies: focus, momentum, product quality.
+
+  **Turning Points**:
+  - Became YC partner and started advising founders
+  - Named president of Y Combinator
+  - Scaled YC to become the world's largest startup accelerator
+  - Started writing influential essays on startups and technology
+</Accordion>
+
+---
+
+<Note>
+  Timeline generation is fully automatic. The AI adapts to different types of people - musicians get eras by album cycles, athletes by career phases, politicians by terms served, etc.
+</Note>

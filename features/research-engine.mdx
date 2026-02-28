@@ -1,0 +1,289 @@
+---
+title: 'Research Engine'
+description: 'Deep research with Exa AI that discovers articles, interviews, YouTube talks, and podcasts across the web automatically'
+icon: 'magnifying-glass'
+---
+
+LORE Timeline's research engine automatically discovers and vets biographical sources from across the web. When you enter a person's name, the system executes a multi-phase discovery process powered by Exa AI to find the most relevant content.
+
+## How It Works
+
+<Steps>
+  <Step title="Generate Search Queries">
+    The LLM analyzes the person's name and generates 8-12 targeted search queries tailored to their likely domain (musician, athlete, politician, scientist, etc.)
+  </Step>
+  
+  <Step title="Execute Search Plan">
+    Each query is sent to Exa AI's search API, which returns high-quality sources with semantic understanding
+  </Step>
+  
+  <Step title="Vet Sources">
+    The LLM reviews each discovered source to ensure it's genuinely about the target person, filtering out people with similar names or tangential mentions
+  </Step>
+  
+  <Step title="Deep Research Per Era">
+    After creating life stages, the system runs additional era-specific searches to discover rare content from each period
+  </Step>
+</Steps>
+
+## Search Query Strategy
+
+The research engine generates diverse query types to ensure comprehensive coverage:
+
+<Tabs>
+  <Tab title="General Biography">
+    2-3 queries for mainstream biographical content:
+    ```json
+    {
+      "query": "\"Sam Altman\" biography profile",
+      "type": "web"
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Domain-Specific">
+    2-3 queries tailored to their field:
+    ```json
+    {
+      "query": "\"Taylor Swift\" discography albums",
+      "type": "web"
+    }
+    ```
+    For musicians: discographies. For athletes: match highlights. For politicians: policy speeches.
+  </Tab>
+  
+  <Tab title="Mainstream Video">
+    2-3 queries for interviews and talks:
+    ```json
+    {
+      "query": "\"Steve Jobs\" interview talk",
+      "type": "video",
+      "includeDomains": ["youtube.com", "youtu.be"]
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Rare Content">
+    2-3 queries for underground/early content:
+    ```json
+    {
+      "query": "\"Marc Andreessen\" before famous early career",
+      "type": "video"
+    }
+    ```
+    Discovers small venues, niche podcasts, campus events, early career footage.
+  </Tab>
+  
+  <Tab title="Historical">
+    1 query with date filtering:
+    ```json
+    {
+      "query": "\"Barack Obama\" senate years",
+      "type": "web",
+      "dateEnd": "2008-01-01"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Exa AI Integration
+
+LORE uses Exa's neural search API to find sources with semantic understanding, not just keyword matching.
+
+<CodeGroup>
+```typescript Exa Search Request
+async function exaSearch(
+  query: string,
+  opts: {
+    numResults?: number;
+    text?: boolean;
+    includeDomains?: string[];
+    startPublishedDate?: string;
+    endPublishedDate?: string;
+  } = {},
+) {
+  const response = await fetch("https://api.exa.ai/search", {
+    method: "POST",
+    headers: {
+      "x-api-key": EXA_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      numResults: opts.numResults ?? 10,
+      type: "auto",
+      text: opts.text ?? false,
+      includeDomains: opts.includeDomains,
+      startPublishedDate: opts.startPublishedDate,
+      endPublishedDate: opts.endPublishedDate,
+    }),
+  });
+  
+  const data = await response.json();
+  return data.results ?? [];
+}
+```
+
+```typescript Source Classification
+function classifySourceType(url: string) {
+  const lower = url.toLowerCase();
+  if (lower.includes("youtube.com") || lower.includes("youtu.be"))
+    return "video";
+  if (lower.includes("twitter.com") || lower.includes("x.com"))
+    return "post";
+  if (lower.includes("interview"))
+    return "interview";
+  return "article";
+}
+```
+</CodeGroup>
+
+## Source Vetting
+
+After discovery, the LLM vets each source to ensure quality and relevance.
+
+<Note>
+  **Strict Verification**: Sources are only included if the title/snippet clearly references the target person. Generic or ambiguous matches are excluded.
+</Note>
+
+```typescript Source Vetting Process
+async function vetSources(
+  name: string,
+  sources: CandidateSource[],
+  generateJson: (system: string, user: string) => Promise<string>,
+) {
+  // Batch into groups of 15 for efficient vetting
+  const BATCH = 15;
+  const vetted: CandidateSource[] = [];
+
+  for (let i = 0; i < sources.length; i += BATCH) {
+    const batch = sources.slice(i, i + BATCH);
+    const items = batch.map((s, idx) => ({
+      idx,
+      title: s.title,
+      url: s.url,
+      snippet: (s.snippet ?? "").slice(0, 200),
+    }));
+
+    const resultJson = await generateJson(
+      `You are a source verification agent. Determine which sources 
+       are genuinely ABOUT the target person (not someone else with 
+       a similar name, not tangentially mentioning them).`,
+      JSON.stringify({ targetPerson: name, sources: items }),
+    );
+
+    const parsed = JSON.parse(resultJson);
+    const validSet = new Set(parsed.valid ?? []);
+
+    for (let j = 0; j < batch.length; j++) {
+      if (validSet.has(j)) {
+        vetted.push(batch[j]);
+      }
+    }
+  }
+
+  return vetted;
+}
+```
+
+## Deep Research Per Era
+
+After creating initial life stages, LORE runs targeted searches for each era to discover rare content from specific periods.
+
+<Info>
+  **Era-Specific Discovery**: Each life stage gets 6-8 additional queries targeting that specific period, filtered by date range.
+</Info>
+
+<Accordion title="Era-Specific Query Generation">
+  The LLM generates queries tailored to each life stage:
+
+  ```typescript
+  const stageQueryJson = await generateJson(
+    `Generate targeted search queries to find sources about THIS SPECIFIC ERA.
+     
+     Generate 6-8 queries:
+     1. 2 web searches for articles/interviews from this era
+     2. 2 video searches for mainstream content
+     3. 2 video searches for rare/underground content from this era
+     4. 1-2 queries targeting specific turning points from this stage`,
+    JSON.stringify({
+      personName: person.name,
+      stageTitle: stage.title,
+      eraSummary: stage.eraSummary,
+      turningPoints: stage.turningPoints,
+      dateStart: stage.dateStart,
+      dateEnd: stage.dateEnd,
+    }),
+  );
+  ```
+
+  Example output for "[18-24] - Startup Operator: Early Builder":
+  - `"Sam Altman" Loopt startup 2005-2012` (web)
+  - `"Sam Altman" Y Combinator early days` (web)
+  - `"Sam Altman" Stanford talk 2007` (video)
+  - `"Sam Altman" location sharing mobile` (video, rare)
+</Accordion>
+
+## Video Discovery
+
+YouTube videos are discovered using domain-filtered searches:
+
+```typescript
+const isVideo = q.type === "video";
+const results = await exaSearch(q.query, {
+  numResults: isVideo ? 5 : 8,
+  text: !isVideo,
+  includeDomains: isVideo ? ["youtube.com", "youtu.be"] : undefined,
+  startPublishedDate: q.dateStart,
+  endPublishedDate: q.dateEnd,
+});
+
+if (isVideo) {
+  addResults(
+    results
+      .filter((r) => extractYoutubeId(r.url))
+      .map((r) => ({ ...r, text: `YouTube video: ${r.title ?? ""}` })),
+    "video",
+  );
+}
+```
+
+<Tip>
+  **Rare Content Focus**: The system specifically searches for underground content like "niche podcasts, small events, old footage, fan recordings, local news" to capture the person before they were famous.
+</Tip>
+
+## Fallback Discovery
+
+If Exa search returns no results, the system falls back to curated search index URLs:
+
+<CardGroup cols={2}>
+  <Card title="Wikipedia" icon="book">
+    Biographical overview and chronology
+  </Card>
+  <Card title="YouTube Search" icon="youtube">
+    Interview and talk results
+  </Card>
+  <Card title="Longform Interviews" icon="microphone">
+    External article indices
+  </Card>
+  <Card title="Career Timeline" icon="timeline">
+    Timeline-oriented sources
+  </Card>
+</CardGroup>
+
+## What You See
+
+As a user, you experience the research engine through the discovery phase:
+
+1. **Enter a name**: Type any person's name into the search field
+2. **Watch discovery**: See progress as the system discovers and vets sources
+3. **Review sources**: Browse the discovered articles, videos, and interviews in your timeline
+4. **Era-specific depth**: Each life stage shows sources specifically from that period
+
+The research engine runs automatically in the background, requiring no configuration or manual source entry. The entire discovery and vetting process typically completes in 30-60 seconds, depending on the person's online presence.
+
+---
+
+<Note>
+  The research engine is powered by [Exa AI](https://exa.ai), which provides neural search capabilities that understand semantic meaning, not just keywords.
+</Note>

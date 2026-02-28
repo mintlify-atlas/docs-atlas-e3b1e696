@@ -1,0 +1,1000 @@
+---
+title: Pipeline Phases
+description: Technical deep dive into LORE Timeline's 5-phase biography ingestion pipeline
+---
+
+## Overview
+
+The pipeline transforms a person's name into a complete interactive biography through 5 sequential phases:
+
+1. **Discover** - Find web sources via AI-generated search queries
+2. **Extract** - Fetch and parse content from URLs
+3. **Stage** - Identify life stages and map sources to eras
+4. **Embed** - Generate vector embeddings for semantic search
+5. **Publish** - Create timeline cards and finalize the biography
+
+Each phase is implemented as a Convex action in `convex/pipeline.ts`. Phases chain automatically via `ctx.scheduler.runAfter()`, enabling resumability if a phase fails or times out.
+
+## Pipeline Orchestration
+
+The pipeline starts with `runIngestion`, a single action that executes all phases:
+
+```typescript
+export const runIngestion = action({
+  args: {
+    personId: v.id("persons"),
+    phase: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const person = await ctx.runQuery(internal.pipeline.getPersonInternal, {
+      personId: args.personId,
+    });
+
+    await ctx.runMutation(internal.pipeline.markPersonStatus, {
+      personId: args.personId,
+      status: "processing",
+    });
+
+    const startPhase = args.phase ?? "discover";
+
+    try {
+      // Execute phases based on startPhase
+      if (startPhase === "discover") { /* ... */ }
+      if (startPhase === "extract") { /* ... */ }
+      if (startPhase === "stage") { /* ... */ }
+      if (startPhase === "embed") { /* ... */ }
+      if (startPhase === "publish") { /* ... */ }
+    } catch (error) {
+      await ctx.runMutation(internal.pipeline.markPersonStatus, {
+        personId: args.personId,
+        status: "failed",
+      });
+      throw error;
+    }
+  },
+});
+```
+
+## Phase 1: Discover
+
+**Goal:** Find high-quality web sources about the person using AI-generated search queries.
+
+### Process Flow
+
+<Steps>
+  <Step title="Generate Search Plan">
+    Ask the LLM to create 8-12 targeted search queries tailored to the person's likely domain:
+
+    ```typescript
+    const queryPlanJson = await generateJson(
+      `You are a research agent. Given a person's name, generate comprehensive search queries.
+      
+      The person could be ANYONE — musician, athlete, politician, scientist, entrepreneur, etc.
+      
+      Output JSON: { "queries": [...] }
+      Each query: { "query": string, "type": "web" | "video", "dateEnd": optional ISO date }
+      
+      Generate 8-12 queries:
+      1. 2-3 general biography/profile searches
+      2. 2-3 domain-specific searches (discography, match highlights, policy speeches)
+      3. 2-3 mainstream video searches (interviews, talks)
+      4. 2-3 underground/rare/early video searches (small venues, early career)
+      5. 1 search for OLD content (set dateEnd for historical material)
+      
+      Use person's full name in quotes for precision.`,
+      JSON.stringify({ personName: person.name })
+    );
+    ```
+
+    Example output:
+    ```json
+    {
+      "queries": [
+        { "query": "\"Steve Jobs\" biography profile", "type": "web" },
+        { "query": "\"Steve Jobs\" Apple founding story", "type": "web" },
+        { "query": "\"Steve Jobs\" interview talk", "type": "video" },
+        { "query": "\"Steve Jobs\" early Apple garage", "type": "video" },
+        { "query": "\"Steve Jobs\" NeXT Pixar", "type": "web", "dateEnd": "2000-01-01" }
+      ]
+    }
+    ```
+  </Step>
+
+  <Step title="Execute Searches via Exa">
+    Run all queries through [Exa AI](https://exa.ai), a neural search engine:
+
+    ```typescript
+    async function exaSearch(query: string, opts: {
+      numResults?: number;
+      text?: boolean;
+      includeDomains?: string[];
+      startPublishedDate?: string;
+      endPublishedDate?: string;
+    }) {
+      const response = await fetch("https://api.exa.ai/search", {
+        method: "POST",
+        headers: {
+          "x-api-key": EXA_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query, ...opts }),
+      });
+      const data = await response.json();
+      return data.results ?? [];
+    }
+    ```
+
+    Video queries filter to YouTube domains:
+    ```typescript
+    if (isVideo) {
+      const results = await exaSearch(q.query, {
+        numResults: 5,
+        includeDomains: ["youtube.com", "youtu.be"],
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Deduplicate Results">
+    Collect all results into a single array, removing duplicates by URL:
+
+    ```typescript
+    const seen = new Set<string>();
+    const all: CandidateSource[] = [];
+
+    for (const r of results) {
+      if (seen.has(r.url)) continue;
+      seen.add(r.url);
+      all.push({
+        url: r.url,
+        title: r.title ?? r.url,
+        type: classifySourceType(r.url),
+        publishedAt: r.publishedDate,
+        snippet: r.text?.slice(0, 400),
+      });
+    }
+    ```
+  </Step>
+
+  <Step title="Vet Sources with LLM">
+    Ask the LLM to verify each source is actually about the target person:
+
+    ```typescript
+    async function vetSources(name: string, sources: CandidateSource[]) {
+      const BATCH = 15;
+      const vetted: CandidateSource[] = [];
+
+      for (let i = 0; i < sources.length; i += BATCH) {
+        const batch = sources.slice(i, i + BATCH);
+        const items = batch.map((s, idx) => ({
+          idx,
+          title: s.title,
+          url: s.url,
+          snippet: s.snippet?.slice(0, 200),
+        }));
+
+        const resultJson = await generateJson(
+          `Determine which sources are genuinely ABOUT this person.
+          Output JSON: { "valid": [array of idx numbers] }
+          Be strict — exclude different people with same name.`,
+          JSON.stringify({ targetPerson: name, sources: items })
+        );
+
+        const parsed = parseJson(resultJson, {});
+        const validSet = new Set(parsed.valid ?? []);
+
+        for (let j = 0; j < batch.length; j++) {
+          if (validSet.has(j)) vetted.push(batch[j]);
+        }
+      }
+      return vetted;
+    }
+    ```
+  </Step>
+
+  <Step title="Save Sources to Database">
+    Replace all existing sources with the vetted results:
+
+    ```typescript
+    await ctx.runMutation(internal.pipeline.replaceSources, {
+      personId: args.personId,
+      sources: finalSources,
+    });
+    ```
+  </Step>
+
+  <Step title="Update Job Status & Chain to Extract">
+    ```typescript
+    await ctx.runMutation(internal.pipeline.upsertJobPhase, {
+      personId: args.personId,
+      phase: "discover",
+      status: "done",
+      progress: 100,
+    });
+
+    await ctx.scheduler.runAfter(0, api.pipeline.runIngestion, {
+      personId: args.personId,
+      phase: "extract",
+    });
+    ```
+  </Step>
+</Steps>
+
+### Fallback Strategy
+
+If Exa API is unavailable or returns no results, use fallback URLs:
+
+```typescript
+function fallbackDiscovery(name: string): CandidateSource[] {
+  const slug = slugify(name, { lower: true, strict: true });
+  return [
+    {
+      url: `https://en.wikipedia.org/wiki/${slugify(name).replace(/\s+/g, "_")}`,
+      title: `${name} - Wikipedia`,
+      type: "article",
+    },
+    {
+      url: `https://www.youtube.com/results?search_query=${encodeURIComponent(name + " interview")}`,
+      title: `${name} interviews - YouTube search`,
+      type: "video",
+    },
+    // ... more fallback sources
+  ];
+}
+```
+
+---
+
+## Phase 2: Extract
+
+**Goal:** Fetch full content from discovered URLs and extract text.
+
+### Process Flow
+
+<Steps>
+  <Step title="Load Sources from Database">
+    ```typescript
+    const sources = await ctx.runQuery(internal.pipeline.listSourcesInternal, {
+      personId: args.personId,
+    });
+
+    // Skip already-extracted sources (resumable)
+    const toExtract = sources.filter(
+      s => !s.rawText && !s.transcriptText
+    );
+    ```
+  </Step>
+
+  <Step title="Extract Each Source">
+    Handle different source types:
+
+    <Tabs>
+      <Tab title="YouTube Videos">
+        Fetch transcript via YouTube's internal timedtext API:
+
+        ```typescript
+        async function fetchYoutubeTranscript(videoId: string): Promise<string> {
+          // Step 1: Fetch video page to extract caption track info
+          const pageResponse = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+          const pageHtml = await pageResponse.text();
+
+          // Extract captionTracks JSON from page source
+          const captionMatch = pageHtml.match(/"captionTracks":\s*(\[.*?\])/);
+          const captionTracks = JSON.parse(captionMatch[1]);
+
+          // Prefer English, fall back to first available
+          const track = captionTracks.find(t => t.languageCode === "en") ?? captionTracks[0];
+
+          // Step 2: Fetch transcript XML
+          const captionUrl = track.baseUrl + "&fmt=srv3";
+          const captionResponse = await fetch(captionUrl);
+          const captionXml = await captionResponse.text();
+
+          // Step 3: Parse XML to extract text
+          const textSegments = [];
+          const segmentRegex = /<p[^>]*>(.*?)<\/p>/gi;
+          let match;
+          while ((match = segmentRegex.exec(captionXml)) !== null) {
+            const text = match[1]
+              .replace(/<[^>]+>/g, "")
+              .replace(/&amp;/g, "&")
+              .trim();
+            if (text) textSegments.push(text);
+          }
+
+          return textSegments.join(" ").slice(0, 30000);
+        }
+        ```
+      </Tab>
+
+      <Tab title="Articles & Web Pages">
+        Fetch HTML, strip tags, extract images:
+
+        ```typescript
+        const response = await fetch(source.url, {
+          headers: { "User-Agent": "TimelineResearchBot/1.0" },
+        });
+        const html = await response.text();
+
+        // Extract images with person's name in alt text or src
+        const imageUrls = extractImageUrls(html, source.url, personName);
+
+        // Strip HTML and return plain text
+        const plain = html
+          .replace(/<script[\s\S]*?<\/script>/gi, " ")
+          .replace(/<style[\s\S]*?<\/style>/gi, " ")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        return { text: plain.slice(0, 20000), imageUrls };
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Update Source Records">
+    ```typescript
+    await ctx.runMutation(internal.pipeline.updateSourceText, {
+      sourceId: source._id,
+      rawText: extracted.text,
+      imageUrls: extracted.imageUrls,
+      transcriptText: extracted.transcriptText,
+    });
+    ```
+
+    Quality score is calculated based on text length:
+    ```typescript
+    qualityScore: bestText.length > 800 ? 0.92 : 0.55
+    ```
+  </Step>
+
+  <Step title="Track Progress">
+    Update job progress after each source:
+    ```typescript
+    completed += 1;
+    await ctx.runMutation(internal.pipeline.upsertJobPhase, {
+      personId: args.personId,
+      phase: "extract",
+      status: "running",
+      progress: Math.round((completed / sources.length) * 100),
+    });
+    ```
+  </Step>
+
+  <Step title="Chain to Stage Phase">
+    ```typescript
+    await ctx.scheduler.runAfter(0, api.pipeline.runIngestion, {
+      personId: args.personId,
+      phase: "stage",
+    });
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Phase 3: Stage
+
+**Goal:** Identify life stages, map sources to stages, and perform deep research per era.
+
+### Process Flow
+
+<Steps>
+  <Step title="Generate Life Stages with LLM">
+    Build a digest of all sources and ask the LLM to identify 3-7 life stages:
+
+    ```typescript
+    const sourceDigest = [];
+    let cursor = null;
+    while (sourceDigest.length < 30) {
+      const page = await ctx.runQuery(internalPipeline.listSourcesPageInternal, {
+        personId: args.personId,
+        cursor,
+        limit: 10,
+      });
+      for (const source of page.page) {
+        sourceDigest.push({
+          id: String(source._id),
+          title: source.title,
+          url: source.url,
+          type: source.type,
+          textSample: (source.rawText ?? source.transcriptText ?? "").slice(0, 1000),
+        });
+      }
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    }
+
+    const stageJson = await generateJson(
+      `Create biographical life stages by age-era first, then refine with context shifts.
+      Output strict JSON: { "stages": [...] }
+      Each stage: order, title, ageStart, ageEnd, dateStart, dateEnd, eraSummary, worldviewSummary, turningPoints, confidence.
+      Title format: "[18-24] - Startup Operator: Early Builder"
+      Use 3-7 stages.`,
+      JSON.stringify({ person: person.name, sources: sourceDigest })
+    );
+    ```
+
+    Example output:
+    ```json
+    {
+      "stages": [
+        {
+          "order": 0,
+          "title": "[0-17] - Childhood & Adoption",
+          "ageStart": 0,
+          "ageEnd": 17,
+          "dateStart": "1955-02-24",
+          "dateEnd": "1972-12-31",
+          "eraSummary": "Born to unwed parents, adopted by Paul and Clara Jobs. Grew up in Silicon Valley, early interest in electronics.",
+          "worldviewSummary": "Curious, rebellious, counterculture values forming.",
+          "turningPoints": [
+            "Adopted by Paul and Clara Jobs",
+            "Met Steve Wozniak through friend",
+            "Built blue boxes with Wozniak"
+          ],
+          "confidence": 0.78
+        }
+      ]
+    }
+    ```
+  </Step>
+
+  <Step title="Normalize and Save Stages">
+    Validate LLM output and fill in fallback values:
+
+    ```typescript
+    function normalizeStageDraft(raw: Partial<StageDraft>, index: number): StageDraft {
+      const ageStart = safeNumber(raw.ageStart, Math.max(0, index * 10));
+      const ageEnd = safeNumber(raw.ageEnd, ageStart + 9);
+
+      return {
+        order: safeNumber(raw.order, index),
+        title: safeString(raw.title, `[${ageStart}-${ageEnd}] - Unnamed Era`),
+        ageStart,
+        ageEnd,
+        dateStart: safeString(raw.dateStart, "unknown"),
+        dateEnd: safeString(raw.dateEnd, "unknown"),
+        eraSummary: safeString(raw.eraSummary, "Biography era summary unavailable."),
+        worldviewSummary: safeString(raw.worldviewSummary, "Worldview summary unavailable."),
+        turningPoints: safeArray(raw.turningPoints).slice(0, 6),
+        confidence: safeNumber(raw.confidence, 0.5),
+      };
+    }
+
+    await ctx.runMutation(internal.pipeline.replaceStages, {
+      personId: args.personId,
+      stages: drafts,
+    });
+    ```
+  </Step>
+
+  <Step title="Map Sources to Stages">
+    For each source, ask the LLM which stage it belongs to:
+
+    ```typescript
+    let cursor = null;
+    while (true) {
+      const page = await ctx.runQuery(internalPipeline.listSourcesPageInternal, {
+        personId: args.personId,
+        cursor,
+        limit: 6,
+      });
+
+      for (const source of page.page) {
+        const matchJson = await generateJson(
+          `Map this source to the best stage order.
+          Output JSON: {stageOrder: number, relevance: number, rationale: string}`,
+          JSON.stringify({
+            source: {
+              title: source.title,
+              url: source.url,
+              sample: (source.rawText ?? source.transcriptText ?? "").slice(0, 900),
+            },
+            stages: stages.map(stage => ({
+              order: stage.order,
+              title: stage.title,
+              eraSummary: stage.eraSummary,
+            })),
+          })
+        );
+
+        const mapped = parseJson(matchJson, {});
+        const chosen = stages.find(s => s.order === mapped.stageOrder) ?? stages[0];
+
+        await ctx.runMutation(internal.pipeline.linkSourceToStage, {
+          stageId: chosen._id,
+          sourceId: source._id,
+          relevance: Math.max(0.1, Math.min(1, mapped.relevance ?? 0.5)),
+          rationale: mapped.rationale ?? "Semantic era fit",
+        });
+      }
+
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    }
+    ```
+  </Step>
+
+  <Step title="Deep Research Per Stage">
+    For each stage, generate stage-specific search queries and discover more sources:
+
+    ```typescript
+    for (const stage of stages) {
+      const stageQueryJson = await generateJson(
+        `Deep research on this specific era.
+        Generate 6-8 targeted queries:
+        1. 2 web searches for articles/interviews from this era
+        2. 2 video searches for mainstream content
+        3. 2 video searches for rare/underground content
+        4. 1-2 queries targeting specific turning points`,
+        JSON.stringify({
+          personName: person.name,
+          stageTitle: stage.title,
+          eraSummary: stage.eraSummary,
+          turningPoints: stage.turningPoints,
+          dateStart: stage.dateStart,
+          dateEnd: stage.dateEnd,
+        })
+      );
+
+      const stageSearchQueries = parseJson(stageQueryJson, { queries: [] }).queries;
+      let deepSources = await deepResearchStage(person.name, stage, stageSearchQueries);
+
+      if (deepSources.length > 0) {
+        deepSources = await vetSources(person.name, deepSources, generateJson);
+      }
+
+      // Add new sources and link them to this stage
+      await ctx.runMutation(internal.pipeline.addSources, {
+        personId: args.personId,
+        sources: deepSources,
+      });
+
+      // Extract content from new sources
+      const newSources = await ctx.runQuery(internal.pipeline.listSourcesInternal, {
+        personId: args.personId,
+      });
+      const deepUrls = new Set(deepSources.map(s => s.url));
+      const justAdded = newSources.filter(
+        s => deepUrls.has(s.url) && !s.rawText
+      );
+
+      for (const source of justAdded) {
+        const extracted = await extractSource(
+          { url: source.url, title: source.title, type: source.type },
+          person.name
+        );
+        await ctx.runMutation(internal.pipeline.updateSourceText, {
+          sourceId: source._id,
+          rawText: extracted.text,
+          imageUrls: extracted.imageUrls,
+          transcriptText: extracted.transcriptText,
+        });
+
+        await ctx.runMutation(internal.pipeline.linkSourceToStage, {
+          stageId: stage._id,
+          sourceId: source._id,
+          relevance: 0.85,
+          rationale: "Deep research: stage-targeted discovery",
+        });
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Chain to Embed Phase">
+    ```typescript
+    await ctx.scheduler.runAfter(0, api.pipeline.runIngestion, {
+      personId: args.personId,
+      phase: "embed",
+    });
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Phase 4: Embed
+
+**Goal:** Convert source text into vector embeddings for semantic search.
+
+### Process Flow
+
+<Steps>
+  <Step title="Load Stage-Source Mappings">
+    ```typescript
+    const stageLinks = await ctx.runQuery(internal.pipeline.listStageLinksForPerson, {
+      personId: args.personId,
+    });
+
+    const stageLinkMap = new Map();
+    for (const link of stageLinks) {
+      stageLinkMap.set(String(link.sourceId), link.stageId);
+    }
+    ```
+  </Step>
+
+  <Step title="Check for Existing Chunks (Resumability)">
+    ```typescript
+    const existingChunks = await ctx.runQuery(internal.pipeline.listChunkSourceIds, {
+      personId: args.personId,
+    });
+    const embeddedSourceIds = new Set(existingChunks.map(c => String(c.sourceId)));
+    ```
+  </Step>
+
+  <Step title="Chunk Text into ~1200 Character Segments">
+    ```typescript
+    function splitChunks(text: string, maxChars = 1200): string[] {
+      const clean = sanitizeText(text).replace(/\s+/g, " ").trim();
+      if (!clean) return [];
+
+      const out = [];
+      let cursor = 0;
+      while (cursor < clean.length) {
+        const end = Math.min(clean.length, cursor + maxChars);
+        out.push(clean.slice(cursor, end));
+        cursor = end;
+      }
+      return out;
+    }
+    ```
+
+    Sanitize text to remove broken unicode:
+    ```typescript
+    function sanitizeText(raw: string): string {
+      return raw
+        .replace(/\\u[0-9a-fA-F]{0,3}(?![0-9a-fA-F])/g, "") // Remove incomplete unicode
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ""); // Remove control chars
+    }
+    ```
+  </Step>
+
+  <Step title="Generate Embeddings in Batches">
+    ```typescript
+    const CHUNKS_PER_SOURCE = 10;
+    const BATCH_SIZE = 20;
+
+    for (const source of sources) {
+      if (embeddedSourceIds.has(String(source._id))) continue;
+
+      const stageId = stageLinkMap.get(String(source._id));
+      const text = source.rawText ?? source.transcriptText ?? "";
+      const chunks = splitChunks(text).slice(0, CHUNKS_PER_SOURCE);
+
+      const citationJson = JSON.stringify({
+        sourceId: String(source._id),
+        title: source.title,
+        url: source.url,
+        publishedAt: source.publishedAt,
+      });
+
+      // Embed in batches of 20
+      for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+        const batchTexts = chunks.slice(i, i + BATCH_SIZE);
+        const embeddings = await ctx.runAction(api.llm.embedTextBatch, {
+          texts: batchTexts,
+        });
+
+        for (let j = 0; j < batchTexts.length; j++) {
+          await ctx.runMutation(internal.pipeline.insertChunk, {
+            personId: args.personId,
+            sourceId: source._id,
+            stageId,
+            text: batchTexts[j],
+            embedding: embeddings[j] ?? [],
+            citation: citationJson,
+          });
+        }
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Chain to Publish Phase">
+    ```typescript
+    await ctx.scheduler.runAfter(0, api.pipeline.runIngestion, {
+      personId: args.personId,
+      phase: "publish",
+    });
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Phase 5: Publish
+
+**Goal:** Create timeline cards and finalize the biography.
+
+### Process Flow
+
+<Steps>
+  <Step title="Search for Person Images">
+    Use Exa to find high-quality images of the person for each stage:
+
+    ```typescript
+    async function searchPersonImages(name: string, stageTitle?: string): Promise<string[]> {
+      const query = stageTitle
+        ? `${name} photo ${stageTitle.replace(/^\[.*?\]\s*-\s*/, "")}`
+        : `${name} photo portrait`;
+
+      const response = await fetch("https://api.exa.ai/search", {
+        method: "POST",
+        headers: {
+          "x-api-key": EXA_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          numResults: 5,
+          type: "auto",
+        }),
+      });
+
+      const data = await response.json();
+      const images = [];
+      for (const result of data.results ?? []) {
+        if (result.image) images.push(result.image);
+      }
+      return [...new Set(images)].slice(0, 3);
+    }
+
+    const personImagesByStage = {};
+    for (const stage of stages) {
+      const images = await searchPersonImages(person.name, stage.title);
+      if (images.length > 0) {
+        personImagesByStage[String(stage._id)] = images;
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Generate Timeline Cards">
+    For each stage, create multiple card types:
+
+    ```typescript
+    for (const stage of stages) {
+      // Delete existing cards
+      const oldCards = await ctx.db
+        .query("timelineCards")
+        .withIndex("by_stage", q => q.eq("stageId", stage._id))
+        .collect();
+      for (const card of oldCards) await ctx.db.delete(card._id);
+
+      let order = 0;
+
+      // 1. Moment card (era summary)
+      await ctx.db.insert("timelineCards", {
+        stageId: stage._id,
+        type: "moment",
+        headline: stage.title,
+        body: stage.eraSummary,
+        order: order++,
+        createdAt: Date.now(),
+      });
+
+      // 2. Quote card (worldview)
+      await ctx.db.insert("timelineCards", {
+        stageId: stage._id,
+        type: "quote",
+        headline: "Worldview in this period",
+        body: stage.worldviewSummary,
+        order: order++,
+        createdAt: Date.now(),
+      });
+
+      // 3. Turning point cards (up to 3)
+      for (const point of stage.turningPoints.slice(0, 3)) {
+        await ctx.db.insert("timelineCards", {
+          stageId: stage._id,
+          type: "turning_point",
+          headline: "Turning Point",
+          body: point,
+          order: order++,
+          createdAt: Date.now(),
+        });
+      }
+
+      // 4. Media cards (linked sources)
+      const links = await ctx.db
+        .query("stageSourceLinks")
+        .withIndex("by_stage", q => q.eq("stageId", stage._id))
+        .collect();
+      for (const link of links.slice(0, 2)) {
+        const source = await ctx.db.get(link.sourceId);
+        if (!source) continue;
+        await ctx.db.insert("timelineCards", {
+          stageId: stage._id,
+          type: "media",
+          headline: source.title,
+          body: source.url,
+          mediaRef: source.url,
+          order: order++,
+          createdAt: Date.now(),
+        });
+      }
+
+      // 5. Image cards (from Exa search)
+      const exaImages = personImagesByStage[String(stage._id)] ?? [];
+      for (const imgUrl of exaImages) {
+        await ctx.db.insert("timelineCards", {
+          stageId: stage._id,
+          type: "image",
+          headline: stage.title,
+          body: imgUrl,
+          mediaRef: imgUrl,
+          order: order++,
+          createdAt: Date.now(),
+        });
+      }
+
+      // 6. Image cards (from source HTML)
+      for (const link of links) {
+        const source = await ctx.db.get(link.sourceId);
+        if (!source) continue;
+        const meta = parseJson(source.metadata, {});
+        if (meta.imageUrls) {
+          for (const imgUrl of meta.imageUrls.slice(0, 2)) {
+            await ctx.db.insert("timelineCards", {
+              stageId: stage._id,
+              type: "image",
+              headline: source.title,
+              body: imgUrl,
+              mediaRef: imgUrl,
+              order: order++,
+              createdAt: Date.now(),
+            });
+          }
+        }
+      }
+
+      // 7. Video cards (YouTube embeds)
+      for (const link of links) {
+        const source = await ctx.db.get(link.sourceId);
+        const ytId = extractYoutubeId(source.url);
+        if (ytId) {
+          await ctx.db.insert("timelineCards", {
+            stageId: stage._id,
+            type: "video",
+            headline: source.title,
+            body: `https://www.youtube-nocookie.com/embed/${ytId}`,
+            mediaRef: source.url,
+            order: order++,
+            createdAt: Date.now(),
+          });
+        }
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Mark Person as Ready">
+    ```typescript
+    await ctx.runMutation(internal.pipeline.upsertJobPhase, {
+      personId: args.personId,
+      phase: "publish",
+      status: "done",
+      progress: 100,
+    });
+
+    await ctx.runMutation(internal.pipeline.markPersonStatus, {
+      personId: args.personId,
+      status: "ready",
+    });
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Error Handling & Resumability
+
+The pipeline is designed to be resumable at any phase:
+
+### Phase Detection
+
+Each phase checks if work has already been done:
+
+```typescript
+// Extract phase skips already-extracted sources
+const toExtract = sources.filter(s => !s.rawText && !s.transcriptText);
+
+// Embed phase skips sources that already have chunks
+if (embeddedSourceIds.has(String(source._id))) continue;
+
+// Stage phase skips if stages already exist
+let stages = await ctx.runQuery(internal.pipeline.listStagesInternal, { personId });
+if (stages.length === 0) {
+  // Generate stages
+}
+```
+
+### Manual Restart
+
+You can restart from any phase:
+
+```typescript
+export const reingestPerson = mutation({
+  args: {
+    personId: v.id("persons"),
+    fromPhase: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.scheduler.runAfter(0, api.pipeline.runIngestion, {
+      personId: args.personId,
+      phase: args.fromPhase ?? "discover",
+    });
+  },
+});
+```
+
+### Error Tracking
+
+```typescript
+try {
+  // ... phases
+} catch (error) {
+  await ctx.runMutation(internal.pipeline.markPersonStatus, {
+    personId: args.personId,
+    status: "failed",
+  });
+  await ctx.runMutation(internal.pipeline.markLatestRunningJobFailed, {
+    personId: args.personId,
+    message: error instanceof Error ? error.message : "Unknown ingestion failure",
+  });
+  throw error;
+}
+```
+
+The `jobs` table tracks which phase failed and stores the error message.
+
+---
+
+## Performance Considerations
+
+### Batching
+
+- **Embeddings**: Process 20 chunks at once via `embedTextBatch`
+- **Source vetting**: Batch 15 sources per LLM call
+- **Database queries**: Use pagination with `limit` and `cursor`
+
+### Rate Limiting
+
+LLM actions include retry logic with exponential backoff:
+
+```typescript
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = await fetch(url, init);
+    if ([429, 502, 503].includes(response.status) && attempt < maxRetries) {
+      const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      continue;
+    }
+    return response;
+  }
+}
+```
+
+### Text Limits
+
+- **Source text**: Capped at 20,000 characters for articles
+- **YouTube transcripts**: Capped at 30,000 characters
+- **Chunks**: ~1200 characters per chunk
+- **Chunks per source**: Maximum 10 chunks
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Convex Backend" icon="server" href="/development/convex-backend">
+    Learn about the Convex functions that power the pipeline
+  </Card>
+  <Card title="Database Schema" icon="database" href="/development/database-schema">
+    Explore the data structures used throughout
+  </Card>
+</CardGroup>

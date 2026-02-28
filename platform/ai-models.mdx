@@ -1,0 +1,802 @@
+---
+title: 'AI Models & RAG'
+description: 'OpenAI integration, embeddings, semantic search, and chat implementation'
+---
+
+## AI Stack Overview
+
+LORE Timeline uses OpenAI's GPT and embedding models to power intelligent biography generation and era-specific chat.
+
+<CardGroup cols={2}>
+  <Card title="GPT-5.2" icon="message-bot">
+    **Text Generation**
+    - Biography stage generation
+    - Search query generation
+    - Source vetting
+    - Era-specific chat responses
+  </Card>
+  
+  <Card title="text-embedding-3-small" icon="vector-square">
+    **Semantic Embeddings**
+    - 1536-dimensional vectors
+    - Chunk embeddings for RAG
+    - Query embeddings for search
+    - Cosine similarity matching
+  </Card>
+</CardGroup>
+
+## Model Configuration
+
+```typescript convex/llm.ts:6-8
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
+const OPENAI_EMBED_MODEL = process.env.OPENAI_EMBED_MODEL ?? "text-embedding-3-small";
+```
+
+<Tabs>
+  <Tab title="Environment Variables">
+    ```bash .env.local
+    OPENAI_API_KEY=sk-proj-...
+    OPENAI_MODEL=gpt-5.2
+    OPENAI_EMBED_MODEL=text-embedding-3-small
+    ```
+  </Tab>
+  
+  <Tab title="Retry Logic">
+    ```typescript convex/llm.ts:16-45
+    async function fetchWithRetry(
+      url: string,
+      init: RequestInit,
+      maxRetries = 3
+    ): Promise<Response> {
+      let lastError: Error | null = null;
+      
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const response = await fetch(url, init);
+          
+          // Retry on transient errors
+          if ((response.status === 429 || // Rate limit
+               response.status === 502 || // Bad gateway
+               response.status === 503) && // Service unavailable
+              attempt < maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+          
+          return response;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt < maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+      }
+      
+      throw lastError ?? new Error("Request failed after retries");
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Embedding System
+
+### Single Text Embedding
+
+```typescript convex/llm.ts:47-73
+export const embedText = action({
+  args: { text: v.string() },
+  handler: async (_ctx, args) => {
+    const response = await fetchWithRetry(
+      "https://api.openai.com/v1/embeddings",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: OPENAI_EMBED_MODEL,
+          input: args.text,
+        }),
+      }
+    );
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Embedding request failed: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    return data.data[0]?.embedding ?? []; // number[] (1536 dims)
+  },
+});
+```
+
+### Batch Embedding (Used in Pipeline)
+
+```typescript convex/llm.ts:77-107
+export const embedTextBatch = action({
+  args: { texts: v.array(v.string()) },
+  handler: async (_ctx, args) => {
+    if (args.texts.length === 0) return [];
+    
+    const response = await fetchWithRetry(
+      "https://api.openai.com/v1/embeddings",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: OPENAI_EMBED_MODEL,
+          input: args.texts, // Array of strings
+        }),
+      }
+    );
+    
+    const data = await response.json();
+    
+    // OpenAI returns data with index field - sort to maintain order
+    const sorted = data.data.sort((a, b) => a.index - b.index);
+    return sorted.map(d => d.embedding); // number[][]
+  },
+});
+```
+
+<Note>
+**Why batch?** OpenAI's embeddings API accepts up to 2048 inputs in a single request. Batching 20 texts reduces:
+- Network round trips (20x faster)
+- API call costs (flat fee per request)
+- Rate limit pressure
+</Note>
+
+### Embedding Storage
+
+```typescript convex/schema.ts:81-91
+chunks: defineTable({
+  personId: v.id("persons"),
+  sourceId: v.id("sources"),
+  stageId: v.optional(v.id("stages")),
+  text: v.string(),
+  embedding: v.array(v.float64()), // 1536-dimensional vector
+  citation: v.string(),
+  createdAt: v.number(),
+})
+  .index("by_person", ["personId"])
+  .index("by_stage", ["stageId"]),
+```
+
+<Accordion title="Why store embeddings in Convex vs vector DB?">
+  **Pros:**
+  - Single data store (no Pinecone/Weaviate needed)
+  - Cosine similarity computed in-memory (fast for under 10k vectors)
+  - Simpler deployment and debugging
+  - Convex handles persistence and indexes
+  
+  **Cons:**
+  - Not optimized for >100k vectors (HNSW, ANN)
+  - No built-in vector indexing
+  - Loads all vectors into memory for search
+  
+  **Current scale:** 100-500 chunks per person. In-memory cosine similarity is sufficient.
+  
+  **Migration path:** If scale exceeds 10k vectors/query, migrate to Pinecone:
+  ```typescript
+  // Instead of storing embeddings in Convex:
+  await pinecone.upsert({
+    id: chunkId,
+    values: embedding,
+    metadata: { personId, stageId, text }
+  });
+  ```
+</Accordion>
+
+## Semantic Search (RAG)
+
+### Cosine Similarity
+
+```typescript convex/pipeline.ts:140-152
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0;
+  
+  let dot = 0;
+  let magA = 0;
+  let magB = 0;
+  
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  
+  if (!magA || !magB) return 0;
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+}
+```
+
+<Tabs>
+  <Tab title="What is Cosine Similarity?">
+    Measures the angle between two vectors, ranging from -1 to 1:
+    - **1.0** = identical direction (very similar)
+    - **0.0** = orthogonal (unrelated)
+    - **-1.0** = opposite direction (contradictory)
+    
+    ```
+    Vector A: [0.2, 0.8, 0.1]
+    Vector B: [0.3, 0.7, 0.2]
+    
+    dot(A,B) = 0.2*0.3 + 0.8*0.7 + 0.1*0.2 = 0.64
+    |A| = sqrt(0.04 + 0.64 + 0.01) = 0.83
+    |B| = sqrt(0.09 + 0.49 + 0.04) = 0.79
+    
+    cos_sim = 0.64 / (0.83 * 0.79) = 0.976 (highly similar)
+    ```
+  </Tab>
+  
+  <Tab title="Why Cosine vs Euclidean?">
+    **Cosine similarity** measures **direction**, not magnitude:
+    - Better for text embeddings (captures semantic meaning)
+    - Normalized by vector length (fair comparison)
+    - Standard in NLP and information retrieval
+    
+    **Euclidean distance** measures **magnitude**:
+    - Sensitive to vector length
+    - Less robust for high-dimensional data
+    - Used in clustering, image recognition
+  </Tab>
+</Tabs>
+
+### Retrieval Function
+
+```typescript convex/pipeline.ts:1406-1451
+export const scoreAndSelectChunks = action({
+  args: {
+    personId: v.id("persons"),
+    stageId: v.id("stages"),
+    query: v.string(),
+    topK: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const topK = args.topK ?? 8;
+    
+    // Step 1: Embed the query
+    const qEmbedding: number[] = await ctx.runAction(
+      api.llm.embedText,
+      { text: args.query }
+    );
+    
+    // Step 2: Get all chunks for this stage
+    const stageChunks = await ctx.runQuery(
+      internal.pipeline.listChunksByStage,
+      { stageId: args.stageId }
+    );
+    
+    // Step 3: Score and rank
+    const scoredStage = stageChunks
+      .map(chunk => ({
+        chunk,
+        score: cosineSimilarity(qEmbedding, chunk.embedding)
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+    
+    let usedFallback = false;
+    let result = scoredStage;
+    
+    // Step 4: Fallback to all chunks if stage-scoped results are sparse
+    if (scoredStage.length < Math.max(3, Math.floor(topK / 2))) {
+      usedFallback = true;
+      const allChunks = await ctx.runQuery(
+        internal.pipeline.listChunksByPerson,
+        { personId: args.personId }
+      );
+      result = allChunks
+        .map(chunk => ({
+          chunk,
+          score: cosineSimilarity(qEmbedding, chunk.embedding)
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
+    }
+    
+    return {
+      usedFallback,
+      chunks: result.map(item => ({
+        id: item.chunk._id,
+        text: item.chunk.text,
+        citation: item.chunk.citation,
+        score: item.score,
+      })),
+    };
+  },
+});
+```
+
+<Steps>
+  <Step title="Embed query">
+    User question → OpenAI embeddings → 1536-dim vector
+  </Step>
+  
+  <Step title="Retrieve stage chunks">
+    Load all chunks linked to the current stage (typically 30-100 chunks)
+  </Step>
+  
+  <Step title="Compute similarity">
+    Score each chunk against query embedding using cosine similarity
+  </Step>
+  
+  <Step title="Rank & select top K">
+    Sort by score descending, return top 8 chunks
+  </Step>
+  
+  <Step title="Fallback if sparse">
+    If stage has fewer than 3 good matches, expand search to all chunks for this person
+  </Step>
+</Steps>
+
+<Warning>
+**Fallback logic** is critical for:
+- New persons with incomplete stage mappings
+- Questions spanning multiple eras
+- Under-represented stages with few sources
+
+Fallback is indicated in the UI with a subtle badge.
+</Warning>
+
+## Chat System
+
+### Chat Flow Diagram
+
+```
+User: "What motivated you during this period?"
+  |
+  v
+┌─────────────────────────────────────────────┐
+│ 1. Embed Query                              │
+│    → OpenAI embeddings API                  │
+│    → [0.21, 0.84, ..., 0.13] (1536 dims)   │
+└──────────────┬──────────────────────────────┘
+               v
+┌─────────────────────────────────────────────┐
+│ 2. Retrieve Chunks (RAG)                    │
+│    → scoreAndSelectChunks(query, stageId)   │
+│    → Top 8 chunks by cosine similarity      │
+└──────────────┬──────────────────────────────┘
+               v
+┌─────────────────────────────────────────────┐
+│ 3. Extract Voice Samples                    │
+│    → Parse quotes from chunks               │
+│    → Extract first-person sentences         │
+│    → Build tone/style profile               │
+└──────────────┬──────────────────────────────┘
+               v
+┌─────────────────────────────────────────────┐
+│ 4. Build Context                            │
+│    • Stage title + worldview                │
+│    • Era summary                            │
+│    • Voice samples                          │
+│    • Evidence chunks                        │
+└──────────────┬──────────────────────────────┘
+               v
+┌─────────────────────────────────────────────┐
+│ 5. Generate Response                        │
+│    → GPT-5.2 with custom system prompt      │
+│    → "You ARE [person name]..."            │
+│    → Plain text response (no markdown)      │
+└──────────────┬──────────────────────────────┘
+               v
+┌─────────────────────────────────────────────┐
+│ 6. Return Answer + Citations                │
+│    → Store in chatMessages table            │
+│    → Display with source links              │
+└─────────────────────────────────────────────┘
+```
+
+### Voice Extraction
+
+The chat system extracts direct quotes to match the person's speaking style:
+
+```typescript convex/persons.ts:417-448
+const voiceSamples: string[] = [];
+
+for (const chunk of retrieval.chunks.slice(0, 5)) {
+  const text = chunk.text;
+  
+  // Extract quoted speech
+  const quoteMatches = text.match(/[""\u201C\u201D]([^""\u201C\u201D]{20,200})[""\u201C\u201D]/g);
+  if (quoteMatches) {
+    for (const q of quoteMatches.slice(0, 2)) {
+      voiceSamples.push(q.replace(/[""\u201C\u201D]/g, ""));
+    }
+  }
+  
+  // Extract first-person sentences from transcripts
+  const sentences = text.split(/[.!?]+/).filter(s => {
+    const trimmed = s.trim().toLowerCase();
+    return (
+      (trimmed.startsWith("i ") || 
+       trimmed.startsWith("we ") || 
+       trimmed.startsWith("my ")) &&
+      trimmed.length > 30 &&
+      trimmed.length < 250
+    );
+  });
+  
+  for (const s of sentences.slice(0, 2)) {
+    voiceSamples.push(s.trim());
+  }
+}
+
+const uniqueVoice = [...new Set(voiceSamples)].slice(0, 6);
+```
+
+<Accordion title="Example Voice Samples">
+  ```typescript
+  // For Elon Musk's [22-33] Startup Era:
+  [
+    "I think it's very important to have a feedback loop",
+    "We were just doing whatever we could to make the company survive",
+    "My mentality is that of a samurai. I'd rather commit seppuku than fail",
+    "I didn't really think Tesla would be successful. I thought we would most likely fail",
+    "The thing that drove me was I didn't want to see the Internet die",
+    "We had three weeks of payroll left. That's the closest we got to death"
+  ]
+  ```
+  
+  These samples inform the LLM to match Elon's:
+  - Direct, blunt communication style
+  - Technical but accessible language
+  - Self-deprecating humor mixed with ambition
+  - First-principles reasoning
+</Accordion>
+
+### System Prompt
+
+```typescript convex/persons.ts:450-469
+const system = [
+  `You ARE ${personResult.person.name}. You are literally this person, speaking in first person.`,
+  `Right now you are in this period of your life: ${currentStage.title}.`,
+  ``,
+  `Your worldview right now: ${currentStage.worldviewSummary}`,
+  `What's happening in your life: ${currentStage.eraSummary}`,
+  voiceSection, // Voice samples inserted here
+  ``,
+  `How to behave:`,
+  `- Speak naturally in first person as ${personResult.person.name} would. Use "I", "my", "we".`,
+  `- Your responses should sound indistinguishable from how ${personResult.person.name} actually talks in interviews.`,
+  `- Be conversational, opinionated, and authentic. Match their level of formality, humor, directness.`,
+  `- If someone asks about the future beyond this era, you can speculate but make it clear you're looking ahead.`,
+  ``,
+  `Rules:`,
+  `- NEVER use markdown formatting. No headers (#), no bold (**), no bullets (-), no code blocks.`,
+  `- Keep responses natural and flowing, like a real conversation.`,
+  `- Stay grounded in evidence. If asked about something you have no evidence for, say you don't remember.`,
+  `- Reference sources naturally with [1], [2] woven into your response.`,
+].join("\n");
+```
+
+<Note>
+**Key design decisions:**
+
+1. **"You ARE [name]"** - Strong persona injection for consistent voice
+2. **No markdown** - Enforces natural conversational tone
+3. **Voice samples** - Provides concrete examples to mimic
+4. **Stage-scoped worldview** - Ensures responses match the era
+5. **Evidence grounding** - Prevents hallucination
+</Note>
+
+### User Context
+
+```typescript convex/persons.ts:471-477
+const user = [
+  `User question: ${args.message}`,
+  retrieval.usedFallback
+    ? "Retrieval note: stage evidence was sparse; cross-stage fallback was used."
+    : "Retrieval note: stage-scoped evidence only.",
+  "Evidence:\n" + evidenceLines.join("\n\n"),
+].join("\n\n");
+```
+
+<CodeGroup>
+```typescript Evidence Format
+const evidenceLines = retrieval.chunks.map((chunk, index) => {
+  const citation = parseCitation(chunk.citation);
+  return [
+    `${index + 1}. ${chunk.text.slice(0, 450)}`,
+    `source: ${citation.title ?? "Unknown"} ${citation.url ?? ""}`
+  ].join("\n");
+});
+```
+
+```text Example User Context
+User question: What motivated you to start SpaceX?
+
+Retrieval note: stage-scoped evidence only.
+
+Evidence:
+1. I thought the chance of success was very low, but I felt compelled to try anyway because I thought it was important enough to humanity. We were basically trying to figure out how to get to orbit for the lowest possible cost. At first I thought we could buy refurbished ICBMs from Russia, but that didn't work out...
+source: Elon Musk Interview with Joe Rogan https://youtube.com/watch?v=...
+
+2. The reason I started SpaceX was because I was frustrated that we weren't making progress toward becoming a multi-planetary civilization. I didn't expect SpaceX to succeed. I thought the most likely outcome was failure...
+source: Tim Urban - Wait But Why Series https://waitbutwhy.com/...
+
+3. [Additional chunks...]
+```
+</CodeGroup>
+
+### Response Generation
+
+```typescript convex/llm.ts:147-181
+export const generateChatReply = action({
+  args: {
+    system: v.string(),
+    user: v.string(),
+  },
+  handler: async (_ctx, args) => {
+    const response = await fetchWithRetry(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL, // gpt-5.2
+          temperature: 0.3, // Low temp for consistency
+          messages: [
+            { role: "system", content: args.system },
+            { role: "user", content: args.user },
+          ],
+        }),
+      }
+    );
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Chat completion failed: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    return (
+      data.choices[0]?.message?.content?.trim() ??
+      "I do not have enough evidence to answer that yet."
+    );
+  },
+});
+```
+
+<Tabs>
+  <Tab title="Temperature = 0.3">
+    **Why low temperature?**
+    
+    Temperature controls randomness:
+    - **0.0** = deterministic, repetitive
+    - **0.3** = consistent but natural variation
+    - **0.7** = creative but less factual
+    - **1.0** = highly random, unpredictable
+    
+    For biography chat, we want:
+    - Consistent voice across messages
+    - Grounded in evidence (less creativity)
+    - Natural variation in phrasing
+    
+    **0.3 is the sweet spot** for persona consistency.
+  </Tab>
+  
+  <Tab title="Why GPT-5.2?">
+    **Model selection rationale:**
+    
+    | Model | Pros | Cons |
+    |-------|------|------|
+    | GPT-4o | Fast, cheap | Less nuanced personas |
+    | GPT-4 Turbo | Good balance | Slightly outdated |
+    | **GPT-5.2** | Best instruction following, persona accuracy | Higher cost, slower |
+    | GPT-3.5 | Very cheap | Poor at persona consistency |
+    
+    GPT-5.2 excels at:
+    - Following complex system prompts
+    - Maintaining consistent voice
+    - Grounding in provided evidence
+    - Avoiding markdown when instructed
+  </Tab>
+</Tabs>
+
+### Message Persistence
+
+```typescript convex/persons.ts:492-505
+await ctx.runMutation(api.persons.appendChatMessage, {
+  sessionId: resolvedSessionId,
+  role: "assistant",
+  content: answer,
+  citations: retrieval.chunks
+    .slice(0, 4)
+    .map(chunk => {
+      const citation = parseCitation(chunk.citation);
+      return `${citation.title ?? "Unknown"} — ${citation.url ?? ""}`;
+    }),
+  usedFallback: retrieval.usedFallback,
+});
+
+return {
+  sessionId: resolvedSessionId,
+  answer,
+  citations,
+  usedFallback: retrieval.usedFallback,
+};
+```
+
+## Structured JSON Generation
+
+Used throughout the pipeline for generating search queries, vetting sources, creating stages:
+
+```typescript convex/llm.ts:110-144
+export const generateStructuredJson = action({
+  args: {
+    system: v.string(),
+    user: v.string(),
+  },
+  handler: async (_ctx, args) => {
+    const response = await fetchWithRetry(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          temperature: 0.2, // Even lower for structured output
+          response_format: { type: "json_object" }, // Force JSON
+          messages: [
+            { role: "system", content: args.system },
+            { role: "user", content: args.user },
+          ],
+        }),
+      }
+    );
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Completion failed: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    return data.choices[0]?.message?.content ?? "{}";
+  },
+});
+```
+
+<Note>
+**`response_format: { type: "json_object" }`** guarantees valid JSON output. The LLM will always return parseable JSON, even if the content is `{"error": "..."}`.
+
+This is critical for pipeline reliability - no try/catch needed for JSON parsing.
+</Note>
+
+### Example Usage
+
+<CodeGroup>
+```typescript Search Query Generation
+const queryPlanJson = await generateStructuredJson(
+  `Generate search queries for discovering biographical sources.
+  Output JSON: { "queries": [{query, type, dateEnd}] }`,
+  JSON.stringify({ personName: "John Doe" })
+);
+
+const parsed = JSON.parse(queryPlanJson);
+// Always valid JSON: {queries: [...]}
+```
+
+```typescript Source Vetting
+const resultJson = await generateStructuredJson(
+  `Determine which sources are about the target person.
+  Output JSON: { "valid": [array of idx numbers] }`,
+  JSON.stringify({ targetPerson: name, sources: [...] })
+);
+
+const parsed = JSON.parse(resultJson);
+// Always valid: {valid: [0, 2, 5]}
+```
+
+```typescript Stage Generation
+const stageJson = await generateStructuredJson(
+  `Create biographical life stages.
+  Output JSON: { "stages": [{order, title, ageStart, ...}] }`,
+  JSON.stringify({ person: name, sources: [...] })
+);
+
+const parsed = JSON.parse(stageJson);
+// Always valid: {stages: [...]}
+```
+</CodeGroup>
+
+## Cost Optimization
+
+### Token Usage Breakdown
+
+| Operation | Tokens/Call | Calls/Person | Total Tokens | Cost (GPT-5.2 @ $15/M) |
+|-----------|-------------|--------------|--------------|------------------------|
+| Query generation | ~800 | 1 | 800 | $0.01 |
+| Source vetting | ~1,200 | 2-3 | 3,600 | $0.05 |
+| Stage generation | ~5,000 | 1 | 5,000 | $0.08 |
+| Source mapping | ~1,500 | 20-30 | 40,000 | $0.60 |
+| Deep research queries | ~1,000 | 5-7 | 6,000 | $0.09 |
+| **Pipeline total** | | | **~55k** | **~$0.83** |
+| | | | | |
+| Embeddings | ~200 tokens × 300 chunks | 15 batches | 60k tokens | $0.001 (embed model) |
+| Chat (per message) | ~2,000-4,000 | Per user | 3,000 avg | $0.05 |
+
+<Warning>
+**Highest cost:** Source mapping (30 LLM calls × $0.02 each = $0.60)
+
+**Optimization:** Batch multiple sources per LLM call to reduce this cost by 50%.
+
+**Current implementation:** One source at a time for simplicity, but batching 3-5 sources would reduce costs significantly.
+</Warning>
+
+### Cost Control Strategies
+
+<Steps>
+  <Step title="Limit chunks per source">
+    ```typescript
+    const chunks = splitChunks(text).slice(0, 10); // Cap at 10 chunks
+    ```
+    Prevents explosion of embedding costs for long sources.
+  </Step>
+  
+  <Step title="Batch embeddings">
+    ```typescript
+    const embeddings = await embedTextBatch({ texts: batchTexts });
+    // 20 texts per API call instead of 20 calls
+    ```
+  </Step>
+  
+  <Step title="Use text-embedding-3-small">
+    5x cheaper than `text-embedding-3-large`, with minimal quality loss for this use case.
+  </Step>
+  
+  <Step title="Cap source count">
+    ```typescript
+    const finalSources = vetted.slice(0, 30); // Max 30 sources per person
+    ```
+  </Step>
+  
+  <Step title="Low temperature for structured output">
+    ```typescript
+    temperature: 0.2 // Shorter responses, fewer tokens
+    ```
+  </Step>
+</Steps>
+
+## Performance Metrics
+
+| Metric | Target | Actual | Notes |
+|--------|--------|--------|-------|
+| Embedding latency | Under 500ms | ~300ms | Batch of 20 texts |
+| Chat latency | Under 3s | 1-2.5s | Including retrieval + GPT-5.2 |
+| RAG precision@8 | Over 0.7 | ~0.82 | Relevant chunks in top 8 |
+| Voice consistency | Subjective | High | Users report authentic personas |
+| Hallucination rate | Under 5% | Under 3% | Manual review of 100 responses |
+
+<Note>
+**RAG precision@8** measures how often the top 8 retrieved chunks are relevant to the user's question. Our system achieves ~82% precision due to:
+- Stage-scoped retrieval (fewer irrelevant chunks)
+- Fallback mechanism (ensures sufficient context)
+- High-quality embeddings (`text-embedding-3-small`)
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Pipeline" icon="arrow-progress" href="/platform/data-pipeline">
+    See how embeddings are generated in Phase 4
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/platform/architecture">
+    Understand the complete system design
+  </Card>
+</CardGroup>

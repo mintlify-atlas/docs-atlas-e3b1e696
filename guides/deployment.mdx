@@ -1,0 +1,261 @@
+---
+title: 'Deployment'
+description: 'Deploy LORE Timeline to production with Convex and Vercel'
+---
+
+LORE Timeline uses Convex for the backend (database and serverless functions) and Next.js for the frontend. This guide walks you through deploying both to production.
+
+## Prerequisites
+
+Before deploying, ensure you have:
+
+- A [Convex account](https://convex.dev)
+- A [Vercel account](https://vercel.com) (or another Next.js hosting platform)
+- Your OpenAI API key
+- Your Exa API key (for web search functionality)
+
+## Deployment Overview
+
+The deployment process involves two main steps:
+
+<Steps>
+  <Step title="Deploy the Convex Backend">
+    Set up your Convex project and deploy your database and serverless functions
+  </Step>
+  <Step title="Deploy the Next.js Frontend">
+    Deploy the frontend to Vercel with proper environment variables
+  </Step>
+</Steps>
+
+---
+
+## Step 1: Deploy Convex Backend
+
+### 1.1 Install Convex CLI
+
+If you haven't already, install the Convex CLI:
+
+```bash
+npm install -g convex
+```
+
+### 1.2 Login to Convex
+
+```bash
+convex login
+```
+
+This opens a browser window for authentication.
+
+### 1.3 Initialize Convex Project
+
+From your project root (`~/workspace/source/`):
+
+```bash
+convex dev
+```
+
+This command:
+- Creates a new Convex project (if this is your first deployment)
+- Generates a development deployment
+- Pushes your schema and functions from `convex/` directory
+- Creates a `.env.local` file with `CONVEX_URL`
+
+<Note>
+The `convex dev` command will ask you to select or create a project. Choose "Create a new project" and give it a name like `lore-timeline`.
+</Note>
+
+### 1.4 Set Environment Variables in Convex
+
+Your Convex functions need access to OpenAI and Exa API keys. Set these in the Convex dashboard:
+
+<Steps>
+  <Step title="Open Convex Dashboard">
+    Go to [dashboard.convex.dev](https://dashboard.convex.dev) and select your project
+  </Step>
+  <Step title="Navigate to Settings > Environment Variables">
+    Click on "Settings" in the left sidebar, then "Environment Variables"
+  </Step>
+  <Step title="Add Required Variables">
+    Add the following environment variables:
+    - `OPENAI_API_KEY`: Your OpenAI API key
+    - `EXA_API_KEY`: Your Exa API key
+    - `OPENAI_MODEL` (optional): Defaults to `gpt-5.2`
+    - `OPENAI_EMBED_MODEL` (optional): Defaults to `text-embedding-3-small`
+  </Step>
+</Steps>
+
+<Warning>
+Environment variables set in the Convex dashboard are available to all Convex functions (queries, mutations, actions). Do NOT commit API keys to your repository.
+</Warning>
+
+### 1.5 Create Production Deployment
+
+Once your dev deployment is working, create a production deployment:
+
+```bash
+convex deploy
+```
+
+This:
+- Creates a production deployment
+- Pushes your schema and functions
+- Returns a production `CONVEX_URL` (e.g., `https://your-project.convex.cloud`)
+
+<Note>
+You'll need to set the same environment variables (OpenAI and Exa keys) in your production deployment via the Convex dashboard.
+</Note>
+
+### 1.6 Generate Production Deploy Key
+
+To enable continuous deployment from Vercel:
+
+<Steps>
+  <Step title="Go to Project Settings">
+    In the Convex dashboard, navigate to Settings > Production Deploy Keys
+  </Step>
+  <Step title="Create Deploy Key">
+    Click "Create Deploy Key" and copy the generated key
+  </Step>
+  <Step title="Save for Vercel">
+    You'll use this key as `CONVEX_DEPLOY_KEY` in Vercel
+  </Step>
+</Steps>
+
+See `~/workspace/source/.env.example:4` for reference.
+
+---
+
+## Step 2: Deploy Next.js Frontend to Vercel
+
+### 2.1 Connect Repository to Vercel
+
+<Steps>
+  <Step title="Push to GitHub">
+    Push your code to a GitHub repository:
+    ```bash
+    git init
+    git add .
+    git commit -m "Initial commit"
+    git remote add origin <your-repo-url>
+    git push -u origin main
+    ```
+  </Step>
+  <Step title="Import to Vercel">
+    Go to [vercel.com/new](https://vercel.com/new) and import your repository
+  </Step>
+  <Step title="Configure Build Settings">
+    Vercel auto-detects Next.js. Verify these settings:
+    - **Framework Preset**: Next.js
+    - **Build Command**: `npm run build` (from `package.json:10`)
+    - **Output Directory**: `.next` (default)
+    - **Install Command**: `npm install`
+  </Step>
+</Steps>
+
+### 2.2 Set Environment Variables in Vercel
+
+Before deploying, add the following environment variable:
+
+<ParamField path="CONVEX_DEPLOY_KEY" type="string" required>
+  The production deploy key from Convex dashboard. This allows Vercel to push Convex functions on each deployment.
+  
+  **Where to find**: Convex Dashboard → Settings → Production Deploy Keys
+  
+  **Note**: This variable is only needed in production/preview environments, not in local development (see `~/workspace/source/.env.example:2-3`).
+</ParamField>
+
+<Warning>
+The `CONVEX_URL` is NOT needed in Vercel environment variables. It's automatically generated during the build process when `CONVEX_DEPLOY_KEY` is present.
+</Warning>
+
+### 2.3 Deploy
+
+Click **Deploy** in Vercel. The deployment process will:
+
+1. Install dependencies (`npm install`)
+2. Run Convex deployment using `CONVEX_DEPLOY_KEY`
+3. Build the Next.js app (`npm run build`)
+4. Deploy to Vercel's edge network
+
+<Note>
+First deployment takes 2-3 minutes. Subsequent deployments are faster due to caching.
+</Note>
+
+### 2.4 Verify Deployment
+
+Once deployed, visit your Vercel URL and:
+
+1. Enter a person's name (e.g., "Sam Altman")
+2. Click "Generate" to trigger the pipeline
+3. Monitor the Convex dashboard logs to ensure:
+   - Discovery phase completes
+   - Sources are extracted
+   - Stages are created
+   - Embeddings are generated
+   - Timeline is published
+
+If everything works, you'll see the timeline appear with era cards and chat functionality.
+
+---
+
+## Continuous Deployment
+
+With this setup:
+
+- **Convex**: Every git push automatically triggers a Convex deployment via `CONVEX_DEPLOY_KEY`
+- **Vercel**: Every git push to `main` triggers a Vercel production deployment
+- **Preview Deployments**: Pull requests create preview deployments with isolated Convex environments
+
+---
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="Error: Missing OPENAI_API_KEY">
+    **Cause**: Environment variables not set in Convex dashboard.
+    
+    **Solution**: 
+    1. Go to Convex Dashboard → Settings → Environment Variables
+    2. Add `OPENAI_API_KEY` and `EXA_API_KEY`
+    3. Restart your Convex deployment: `convex deploy`
+    
+    See `~/workspace/source/convex/llm.ts:6-12` for how these are used.
+  </Accordion>
+  
+  <Accordion title="Error: CONVEX_DEPLOY_KEY invalid">
+    **Cause**: Deploy key is incorrect or expired.
+    
+    **Solution**:
+    1. Generate a new deploy key in Convex dashboard
+    2. Update `CONVEX_DEPLOY_KEY` in Vercel settings
+    3. Redeploy in Vercel
+  </Accordion>
+  
+  <Accordion title="Deployment succeeds but API calls fail">
+    **Cause**: Environment variables set in local `.env.local` but not in production Convex dashboard.
+    
+    **Solution**: Environment variables must be set in TWO places:
+    - Convex Dashboard (for backend functions)
+    - Vercel (only for `CONVEX_DEPLOY_KEY`)
+  </Accordion>
+  
+  <Accordion title="Build fails with 'convex' command not found">
+    **Cause**: Convex CLI not installed in build environment.
+    
+    **Solution**: Ensure `convex` is in `dependencies` (not `devDependencies`) in `package.json:16`. Vercel's build process will install it automatically.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Learn about environment variables and configuration options
+  </Card>
+  <Card title="Customization" icon="palette" href="/guides/customization">
+    Customize UI, branding, and pipeline behavior
+  </Card>
+</CardGroup>

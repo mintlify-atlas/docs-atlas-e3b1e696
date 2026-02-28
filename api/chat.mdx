@@ -1,0 +1,351 @@
+---
+title: Chat functions
+description: Session management and message handling for era-specific conversations
+---
+
+Chat functionality in LORE Timeline is provided through the `persons` module. All chat functions are scoped to a specific person and life stage, ensuring conversations are grounded in the evidence from that era.
+
+## Overview
+
+LORE Timeline uses a **session-based chat system** where each conversation is tied to:
+- A **person** (e.g., Sam Altman)
+- A **stage** (e.g., "[2014-2019] - YC President")
+- An optional **clientId** for multi-user isolation
+
+This ensures that when you ask "What were you thinking at the time?", the AI responds from the perspective of that specific era, grounded in real evidence.
+
+## Chat Flow
+
+<Steps>
+  <Step title="User sends message">
+    Call `sendStageChat` with person, stage, message, and optional clientId
+  </Step>
+  
+  <Step title="Session lookup or creation">
+    System checks if a session exists for this person/stage/client. If not, creates one via `createChatSession`
+  </Step>
+  
+  <Step title="User message stored">
+    User's message is appended to the session via `appendChatMessage` with role `"user"`
+  </Step>
+  
+  <Step title="Evidence retrieval">
+    `scoreAndSelectChunks` retrieves the top 8 most relevant chunks from the stage (or across all stages if evidence is sparse)
+  </Step>
+  
+  <Step title="Voice extraction">
+    System extracts direct quotes and first-person speech samples from the evidence to capture the person's voice
+  </Step>
+  
+  <Step title="AI response generation">
+    `generateChatReply` creates a response using the person's worldview, voice samples, and retrieved evidence
+  </Step>
+  
+  <Step title="Assistant message stored">
+    AI's response is appended with role `"assistant"`, including citations and fallback status
+  </Step>
+  
+  <Step title="Return to user">
+    Response is returned with sessionId, answer, citations, and usedFallback flag
+  </Step>
+</Steps>
+
+## Functions
+
+### sendStageChat
+
+Sends a message and generates an AI response grounded in the person's life during the specified stage. This is the main entry point for chat functionality.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to chat with
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The life stage/era for the conversation
+</ParamField>
+
+<ParamField path="message" type="string" required>
+  The user's message
+</ParamField>
+
+<ParamField path="sessionId" type="Id<'chatSessions'>" optional>
+  Existing session ID. If omitted, the system will look up or create a session.
+</ParamField>
+
+<ParamField path="clientId" type="string" optional>
+  Client identifier for session isolation (useful in multi-user scenarios)
+</ParamField>
+
+**Returns:**
+
+<ResponseField name="sessionId" type="Id<'chatSessions'>">
+  The session ID (created or existing)
+</ResponseField>
+
+<ResponseField name="answer" type="string">
+  The AI-generated response in the person's voice
+</ResponseField>
+
+<ResponseField name="citations" type="string[]">
+  Array of source citations (up to 4), formatted as: `"Title — URL"`
+</ResponseField>
+
+<ResponseField name="usedFallback" type="boolean">
+  Whether cross-stage retrieval was used. `true` indicates the stage had limited evidence.
+</ResponseField>
+
+```typescript
+const result = await sendStageChat({
+  personId: "...",
+  stageId: "...",
+  message: "What were you thinking when you joined Y Combinator?",
+  clientId: "user-abc123"
+});
+
+// {
+//   sessionId: "...",
+//   answer: "I joined YC because I saw firsthand how hard it is for first-time founders. Back in 2014, I wanted to create...",
+//   citations: [
+//     "Interview with Sam Altman — https://example.com/interview",
+//     "Y Combinator History — https://ycombinator.com/history"
+//   ],
+//   usedFallback: false
+// }
+```
+
+<Info>
+**Voice matching:** The system extracts real quotes from transcripts and articles to ensure the AI's tone, vocabulary, and sentence structure match how the person actually talks.
+</Info>
+
+### createChatSession
+
+Creates a new chat session scoped to a person and stage. Sessions are automatically created by `sendStageChat`, but you can create them manually if needed.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person to chat with
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The life stage/era for the conversation
+</ParamField>
+
+<ParamField path="clientId" type="string" optional>
+  Client identifier for session isolation
+</ParamField>
+
+**Returns:** `Id<'chatSessions'>` - The new session ID
+
+```typescript
+const sessionId = await createChatSession({
+  personId: "...",
+  stageId: "...",
+  clientId: "user-abc123"
+});
+```
+
+### getChatSessionMessages
+
+Retrieves all messages for a chat session.
+
+<ParamField path="personId" type="Id<'persons'>" required>
+  The person ID
+</ParamField>
+
+<ParamField path="stageId" type="Id<'stages'>" required>
+  The stage ID
+</ParamField>
+
+<ParamField path="clientId" type="string" optional>
+  Client identifier for session lookup
+</ParamField>
+
+**Returns:**
+
+<ResponseField name="sessionId" type="Id<'chatSessions'> | null">
+  The session ID, or `null` if no session exists
+</ResponseField>
+
+<ResponseField name="messages" type="array">
+  Array of message objects sorted by creation time (oldest first)
+</ResponseField>
+
+<Expandable title="Message object structure">
+  <ResponseField name="_id" type="Id<'chatMessages'>">
+    Message ID
+  </ResponseField>
+  
+  <ResponseField name="sessionId" type="Id<'chatSessions'>">
+    Parent session ID
+  </ResponseField>
+  
+  <ResponseField name="role" type="'user' | 'assistant'">
+    Message role
+  </ResponseField>
+  
+  <ResponseField name="content" type="string">
+    Message text content
+  </ResponseField>
+  
+  <ResponseField name="citations" type="string[]">
+    Array of source citations (only populated for assistant messages)
+  </ResponseField>
+  
+  <ResponseField name="usedFallback" type="boolean">
+    Whether cross-stage retrieval was used (only relevant for assistant messages)
+  </ResponseField>
+  
+  <ResponseField name="createdAt" type="number">
+    Unix timestamp (milliseconds)
+  </ResponseField>
+</Expandable>
+
+```typescript
+const { sessionId, messages } = await getChatSessionMessages({
+  personId: "...",
+  stageId: "...",
+  clientId: "user-abc123"
+});
+
+if (sessionId) {
+  console.log(`Found ${messages.length} messages in session ${sessionId}`);
+}
+```
+
+### appendChatMessage
+
+Appends a message to an existing chat session. This is typically called by `sendStageChat`, but can be used directly for custom chat implementations.
+
+<ParamField path="sessionId" type="Id<'chatSessions'>" required>
+  The session to append to
+</ParamField>
+
+<ParamField path="role" type="'user' | 'assistant'" required>
+  Message role
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  Message text content
+</ParamField>
+
+<ParamField path="citations" type="string[]" required>
+  Array of source citations (use empty array `[]` for user messages)
+</ParamField>
+
+<ParamField path="usedFallback" type="boolean" required>
+  Whether cross-stage retrieval was used (use `false` for user messages)
+</ParamField>
+
+```typescript
+await appendChatMessage({
+  sessionId: "...",
+  role: "user",
+  content: "Tell me about your early years at YC",
+  citations: [],
+  usedFallback: false
+});
+```
+
+## Session Isolation
+
+The `clientId` parameter enables session isolation for multi-user scenarios:
+
+<Tabs>
+  <Tab title="Single user">
+    Omit `clientId` to use a shared session for all clients viewing the same person/stage.
+    
+    ```typescript
+    await sendStageChat({
+      personId: "...",
+      stageId: "...",
+      message: "What were you building?"
+      // No clientId = shared session
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Multi-user">
+    Pass a unique `clientId` (e.g., user ID, device ID) to isolate sessions per user.
+    
+    ```typescript
+    await sendStageChat({
+      personId: "...",
+      stageId: "...",
+      message: "What were you building?",
+      clientId: "user-alice-123" // Isolated session
+    });
+    ```
+    
+    This ensures User A's conversation doesn't interfere with User B's, even if they're chatting with the same person/stage.
+  </Tab>
+</Tabs>
+
+## Evidence Grounding
+
+Every AI response is grounded in real evidence using **Retrieval-Augmented Generation (RAG)**:
+
+1. **Query embedding**: User's message is embedded into a 1536-dimensional vector
+2. **Semantic search**: Cosine similarity is computed against all chunks in the stage
+3. **Top-K retrieval**: The 8 most similar chunks are selected (scores typically 0.6-0.95)
+4. **Fallback**: If fewer than 4 chunks are found in the stage, search expands to all chunks for the person
+5. **Citation extraction**: Up to 4 unique sources are cited in the response
+
+```typescript
+// Evidence retrieval (internal to sendStageChat)
+const retrieval = await scoreAndSelectChunks({
+  personId,
+  stageId,
+  query: message,
+  topK: 8
+});
+
+// retrieval.chunks = [
+//   { text: "...", score: 0.87, citation: "{...}" },
+//   { text: "...", score: 0.84, citation: "{...}" },
+//   ...
+// ]
+```
+
+<Tip>
+High scores (0.8+) indicate strong semantic relevance. Low scores (< 0.5) suggest the query is outside the available evidence, prompting the AI to say "I don't remember the details" rather than fabricate.
+</Tip>
+
+## Voice Extraction
+
+`sendStageChat` automatically extracts voice samples from the evidence to ensure the AI matches the person's speaking style:
+
+```typescript
+// Extract direct quotes
+const quoteMatches = text.match(/[""\u201C\u201D]([^""\u201C\u201D]{20,200})[""\u201C\u201D]/g);
+
+// Extract first-person sentences
+const sentences = text.split(/[.!?]+/).filter(s => {
+  const trimmed = s.trim().toLowerCase();
+  return (trimmed.startsWith("i ") || trimmed.startsWith("we ") || trimmed.startsWith("my "))
+    && trimmed.length > 30 && trimmed.length < 250;
+});
+
+// Up to 6 unique samples included in system prompt
+const voiceSamples = [...new Set([...quoteMatches, ...sentences])].slice(0, 6);
+```
+
+This ensures responses capture tone, vocabulary, sentence structure, and personality.
+
+## System Prompt Structure
+
+The system prompt for chat includes:
+
+1. **Identity**: "You ARE [name]. You are literally this person, speaking in first person."
+2. **Era context**: Stage title, worldview summary, life summary
+3. **Voice samples**: 6 real quotes/speech patterns from this era
+4. **Behavior instructions**: Conversational, opinionated, authentic
+5. **Rules**: No markdown, stay grounded, use citations, admit uncertainty when evidence is sparse
+
+See `convex/persons.ts:450-469` for the full system prompt template.
+
+## Source Reference
+
+All chat functions are in `convex/persons.ts`:
+- `sendStageChat` (lines 350-507)
+- `createChatSession` (lines 509-523)
+- `getChatSessionMessages` (lines 282-318)
+- `appendChatMessage` (lines 525-543)

@@ -1,0 +1,636 @@
+---
+title: Styling & Design System
+description: Tailwind CSS, custom CSS variables, and comic book aesthetic
+icon: 'palette'
+---
+
+## Overview
+
+LORE Timeline uses **Tailwind CSS v4** with a custom **comic book aesthetic**. The design system emphasizes bold borders, offset shadows, and a warm paper-like color palette.
+
+## Tailwind Configuration
+
+LORE uses **Tailwind v4** with the new CSS-first configuration approach.
+
+### PostCSS Setup
+
+```js postcss.config.mjs
+const config = {
+  plugins: ["@tailwindcss/postcss"],
+};
+
+export default config;
+```
+
+### Global CSS Import
+
+```css app/globals.css
+@import "tailwindcss";
+
+/* CSS variables and custom styles below */
+```
+
+Tailwind v4 is imported directly in CSS using the `@import` directive instead of traditional `@tailwind` directives.
+
+## CSS Variables
+
+The entire color palette is defined using CSS custom properties in `app/globals.css`.
+
+<CodeGroup>
+```css app/globals.css
+:root {
+  --paper: #f4efe7;       /* Warm cream background */
+  --ink: #171310;          /* Near-black text */
+  --panel: #fffaf2;        /* Off-white panel backgrounds */
+  --accent: #c34628;       /* Rust red for CTAs and highlights */
+  --frame: #2c2420;        /* Dark brown borders */
+  --muted: #a09888;        /* Muted text for labels */
+  --success: #2d6a4f;      /* Green for success states */
+  --warn: #b5851b;         /* Amber for warnings */
+}
+```
+</CodeGroup>
+
+### Color Usage
+
+| Variable | Usage | Examples |
+|----------|-------|----------|
+| `--paper` | Page background | `<body>` background |
+| `--ink` | Primary text | Headings, body text |
+| `--panel` | Card backgrounds | Timeline cards, modals |
+| `--accent` | CTAs, links | Buttons, active states |
+| `--frame` | Borders | Comic panel borders, dividers |
+| `--muted` | Secondary text | Labels, timestamps |
+| `--success` | Success indicators | Completed phases |
+| `--warn` | Warning indicators | Low confidence, processing |
+
+## Typography
+
+LORE uses two **Google Fonts** loaded via Next.js font optimization.
+
+### Font Configuration
+
+<CodeGroup>
+```tsx app/layout.tsx
+import { Bebas_Neue, IBM_Plex_Sans } from "next/font/google";
+
+const display = Bebas_Neue({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-display",
+});
+
+const body = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-body",
+});
+```
+</CodeGroup>
+
+```css app/globals.css
+@theme inline {
+  --font-sans: var(--font-body);
+}
+
+body {
+  font-family: var(--font-body), sans-serif;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display), sans-serif;
+  line-height: 0.95;
+}
+```
+
+### Font Roles
+
+<CardGroup cols={2}>
+  <Card title="Bebas Neue" icon="heading">
+    **Display Font** - Used for all headings (h1, h2, h3). Tall, condensed, all-caps friendly.
+  </Card>
+  
+  <Card title="IBM Plex Sans" icon="type">
+    **Body Font** - Used for paragraphs, UI text, and buttons. Clean, readable, multiple weights.
+  </Card>
+</CardGroup>
+
+## Custom CSS Classes
+
+LORE defines several custom CSS classes for the comic book aesthetic.
+
+### Comic Panel Card
+
+```css app/globals.css
+.comic-panel {
+  border: 3px solid var(--frame);
+  border-radius: 0.75rem;
+  background: var(--panel);
+  box-shadow: 5px 5px 0 0 var(--frame);
+}
+
+.comic-panel--accent {
+  border-color: var(--accent);
+  box-shadow: 5px 5px 0 0 var(--accent);
+}
+```
+
+**Usage:**
+
+<Tabs>
+  <Tab title="Standard Panel">
+    ```tsx
+    <div className="comic-panel p-5">
+      <h3>Headline</h3>
+      <p>Body text</p>
+    </div>
+    ```
+    Creates a card with dark border and offset shadow.
+  </Tab>
+  
+  <Tab title="Accent Panel">
+    ```tsx
+    <div className="comic-panel comic-panel--accent p-5">
+      <h3>Turning Point</h3>
+      <p>Major life event</p>
+    </div>
+    ```
+    Uses accent color for border and shadow (rust red).
+  </Tab>
+</Tabs>
+
+### Speech Bubble
+
+```css app/globals.css
+.speech-bubble {
+  position: relative;
+  border: 2px solid var(--frame);
+  border-radius: 1rem;
+  background: white;
+  padding: 0.75rem 1rem;
+}
+
+.speech-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: -10px;
+  left: 1.5rem;
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-top: 10px solid var(--frame);
+}
+
+.speech-bubble--right::after {
+  left: auto;
+  right: 1.5rem;
+}
+
+.speech-bubble--user {
+  background: var(--panel);
+}
+```
+
+**Usage:**
+
+```tsx
+{/* Worldview quote */}
+<blockquote className="speech-bubble">
+  "This was a formative period in my thinking."
+</blockquote>
+
+{/* Chat message (assistant) */}
+<div className="speech-bubble">
+  <p>Based on the sources...</p>
+</div>
+
+{/* Chat message (user) */}
+<div className="speech-bubble speech-bubble--right speech-bubble--user">
+  <p>What did they think about this?</p>
+</div>
+```
+
+### Timeline Spine
+
+```css app/globals.css
+.timeline-spine {
+  position: relative;
+}
+
+.timeline-spine::before {
+  content: "";
+  position: absolute;
+  left: 1.25rem;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--frame);
+}
+
+@media (min-width: 1024px) {
+  .timeline-spine::before {
+    left: 2rem;
+  }
+}
+
+.spine-dot {
+  position: absolute;
+  left: calc(-3rem + 1.25rem - 7px);
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 3px solid var(--frame);
+  background: var(--panel);
+  z-index: 10;
+}
+
+.spine-dot--active {
+  background: var(--accent);
+}
+
+@media (min-width: 1024px) {
+  .spine-dot {
+    left: calc(-4rem + 2rem - 7px);
+  }
+}
+```
+
+**Usage:**
+
+```tsx
+<div className="timeline-spine pl-12 lg:pl-16">
+  {timeline.map((entry, index) => (
+    <section key={entry.stage._id}>
+      {/* Dot indicator */}
+      <div className={cn(
+        "spine-dot top-[2.35rem]",
+        isActive && "spine-dot--active"
+      )} />
+      
+      {/* Stage content */}
+      <h2>{entry.stage.title}</h2>
+      <p>{entry.stage.eraSummary}</p>
+    </section>
+  ))}
+</div>
+```
+
+### Chapter Header
+
+```css app/globals.css
+.chapter-header {
+  font-family: var(--font-display), sans-serif;
+  line-height: 0.95;
+  position: relative;
+  padding-bottom: 0.5rem;
+}
+
+.chapter-header::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 3rem;
+  height: 4px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+```
+
+**Usage:**
+
+```tsx
+<h2 className="chapter-header text-4xl sm:text-5xl">
+  Startup Operator: Loopt Years
+</h2>
+```
+
+Adds a small accent bar below the heading for visual emphasis.
+
+### Skeleton Loader
+
+```css app/globals.css
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--panel) 25%,
+    var(--paper) 50%,
+    var(--panel) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+
+@keyframes skeleton-pulse {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+```
+
+**Usage:**
+
+```tsx
+function PersonSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="skeleton h-8 w-64" />
+      <div className="skeleton h-48 w-full" />
+      <div className="skeleton h-48 w-full" />
+    </div>
+  );
+}
+```
+
+## Utility Patterns
+
+### Responsive Design
+
+LORE uses Tailwind's responsive prefixes consistently:
+
+```tsx
+{/* Mobile-first approach */}
+<div className="px-5 py-4 sm:px-8 lg:px-12">
+  {/* 5 → 8 → 12 as viewport grows */}
+</div>
+
+{/* Grid breakpoints */}
+<div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {/* 1 → 2 → 3 columns */}
+</div>
+
+{/* Hidden on mobile */}
+<nav className="hidden lg:block">
+  {/* Desktop-only sidebar */}
+</nav>
+```
+
+### Conditional Styling with `cn()`
+
+The `cn()` utility combines `clsx` and `tailwind-merge` for conditional classes.
+
+```tsx
+import { cn } from "@/lib/cn";
+
+<div className={cn(
+  "rounded-xl border-2 px-4 py-3",
+  status === "ready" && "border-[var(--success)] text-[var(--success)]",
+  status === "processing" && "border-[var(--warn)] text-[var(--warn)]",
+  status === "failed" && "border-red-500 text-red-500"
+)} />
+```
+
+### Custom Color Usage
+
+Access CSS variables using bracket notation:
+
+```tsx
+{/* Background */}
+<div className="bg-[var(--panel)]" />
+
+{/* Text color */}
+<p className="text-[var(--muted)]" />
+
+{/* Border */}
+<div className="border-2 border-[var(--frame)]" />
+
+{/* Opacity */}
+<div className="text-[var(--ink)]/80" />
+```
+
+## Design Tokens
+
+### Spacing Scale
+
+LORE uses Tailwind's default spacing scale with these common values:
+
+- **xs**: `0.125rem` (2px)
+- **sm**: `0.25rem` (4px)
+- **md**: `0.5rem` (8px)
+- **lg**: `0.75rem` (12px)
+- **xl**: `1rem` (16px)
+- **2xl**: `1.5rem` (24px)
+
+### Border Widths
+
+```css
+border      /* 1px */
+border-2    /* 2px - Most common for comic panels */
+border-3    /* 3px - Comic panel cards */
+border-4    /* 4px - Hero panels */
+```
+
+### Border Radius
+
+```css
+rounded-lg     /* 0.5rem - Standard inputs */
+rounded-xl     /* 0.75rem - Buttons, cards */
+rounded-2xl    /* 1rem - Speech bubbles */
+rounded-3xl    /* 1.5rem - Hero panels */
+rounded-full   /* 9999px - Badges, dots */
+```
+
+### Shadows
+
+Custom shadows are defined inline for comic effect:
+
+```tsx
+{/* Offset shadow (comic panel) */}
+<div className="shadow-[5px_5px_0_0_var(--frame)]" />
+
+{/* Large offset shadow (hero panel) */}
+<div className="shadow-[8px_8px_0_0_var(--frame)]" />
+
+{/* Subtle hover shadow */}
+<div className="hover:shadow-[3px_3px_0_0_var(--frame)]" />
+```
+
+## Animations
+
+LORE uses **Framer Motion** for complex animations and CSS transitions for simple hover effects.
+
+### CSS Transitions
+
+```tsx
+{/* Hover lift */}
+<button className="transition hover:translate-y-[-1px]">
+  Click me
+</button>
+
+{/* Color transition */}
+<a className="text-[var(--muted)] transition hover:text-[var(--ink)]">
+  Link
+</a>
+
+{/* Background transition */}
+<div className="rounded-lg transition hover:bg-[var(--panel)]">
+  Hover area
+</div>
+```
+
+### Framer Motion Patterns
+
+See the [Components](/development/components#animation-patterns) page for Framer Motion examples.
+
+## Component Styling Patterns
+
+### Button Styles
+
+<Tabs>
+  <Tab title="Primary Button">
+    ```tsx
+    <button className="
+      rounded-xl
+      border-2 border-[var(--frame)]
+      bg-[var(--accent)]
+      px-6 py-2.5
+      font-semibold text-white
+      transition hover:translate-y-[-1px]
+      disabled:cursor-not-allowed disabled:opacity-50
+    ">
+      Generate Timeline
+    </button>
+    ```
+  </Tab>
+  
+  <Tab title="Secondary Button">
+    ```tsx
+    <button className="
+      rounded-xl
+      border-2 border-[var(--frame)]
+      bg-white
+      px-4 py-2
+      text-sm font-semibold
+      transition hover:translate-y-[-1px]
+    ">
+      View Sources
+    </button>
+    ```
+  </Tab>
+  
+  <Tab title="Icon Button">
+    ```tsx
+    <button className="
+      flex size-8 items-center justify-center
+      rounded-lg
+      border-2 border-[var(--frame)]
+      bg-white
+      transition hover:bg-[var(--paper)]
+    ">
+      <CloseIcon />
+    </button>
+    ```
+  </Tab>
+</Tabs>
+
+### Input Styles
+
+```tsx
+<input className="
+  h-12
+  rounded-xl
+  border-2 border-[var(--frame)]
+  bg-white
+  px-4 text-base
+  outline-none
+  transition focus:border-[var(--accent)]
+" />
+```
+
+### Badge Styles
+
+```tsx
+<span className="
+  inline-block
+  rounded-full
+  border-2 border-[var(--frame)]
+  px-3 py-0.5
+  text-xs font-bold uppercase tabular-nums
+">
+  Ages 19–24
+</span>
+```
+
+## Accessibility
+
+### Focus States
+
+All interactive elements have visible focus states:
+
+```tsx
+{/* Input focus */}
+<input className="outline-none focus:border-[var(--accent)]" />
+
+{/* Button focus */}
+<button className="focus:ring-2 focus:ring-[var(--accent)] focus:ring-offset-2" />
+```
+
+### Reduced Motion
+
+Animations respect user preferences:
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+```
+
+Framer Motion automatically respects `prefers-reduced-motion`.
+
+### Semantic HTML
+
+- Use `<nav>` for navigation
+- Use `<main>` for page content
+- Use `<section>` for timeline chapters
+- Use `<article>` for timeline cards
+- Include `aria-label` on interactive elements
+
+## Dark Mode
+
+LORE currently uses a **fixed light theme** with warm, paper-like tones. Dark mode is not implemented but could be added using CSS variables:
+
+```css
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1a1613;
+    --ink: #f4efe7;
+    --panel: #2c2420;
+    /* ... */
+  }
+}
+```
+
+## Best Practices
+
+1. **Use CSS variables** for all colors via bracket notation: `bg-[var(--panel)]`
+2. **Prefer Tailwind utilities** over custom CSS when possible
+3. **Use `cn()` helper** for conditional classes to avoid conflicts
+4. **Follow mobile-first** approach with `sm:`, `lg:` prefixes
+5. **Respect reduced motion** - test with OS-level setting enabled
+6. **Maintain comic aesthetic** - always use offset shadows and bold borders
+7. **Keep spacing consistent** - use Tailwind's scale (px-4, py-3, gap-2, etc.)
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Next.js App" icon="folder-tree" href="/development/nextjs-app">
+    Learn about app structure and routing
+  </Card>
+  
+  <Card title="Components" icon="cube" href="/development/components">
+    Explore React components and patterns
+  </Card>
+</CardGroup>

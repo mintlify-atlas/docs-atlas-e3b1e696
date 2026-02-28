@@ -1,0 +1,377 @@
+---
+title: Database schema
+description: Complete reference for all Convex tables, fields, and indexes
+---
+
+LORE Timeline uses a Convex database with 9 tables that store persons, sources, life stages, embeddings, chat sessions, and more.
+
+## persons
+
+Root entity representing a researched individual.
+
+<ResponseField name="_id" type="Id<'persons'>">
+  Auto-generated unique identifier
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Full name of the person (e.g., "Sam Altman")
+</ResponseField>
+
+<ResponseField name="slug" type="string">
+  URL-safe slug with timestamp suffix (e.g., "sam-altman-1709123456")
+</ResponseField>
+
+<ResponseField name="status" type="'pending' | 'processing' | 'ready' | 'failed'">
+  Current pipeline status:
+  - `pending`: Created but ingestion not started
+  - `processing`: Pipeline is running
+  - `ready`: All phases complete, timeline ready for viewing
+  - `failed`: Pipeline encountered an error
+</ResponseField>
+
+<ResponseField name="birthDate" type="string" optional>
+  ISO date string if known (e.g., "1985-04-22")
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp (milliseconds) when person was created
+</ResponseField>
+
+<ResponseField name="updatedAt" type="number">
+  Unix timestamp (milliseconds) of last update
+</ResponseField>
+
+**Indexes:**
+- `by_slug` - Fast lookup by slug
+- `by_created` - List persons by creation time (descending)
+
+---
+
+## jobs
+
+Pipeline job tracker for monitoring progress of each phase.
+
+<ResponseField name="personId" type="Id<'persons'>">
+  Parent person ID
+</ResponseField>
+
+<ResponseField name="phase" type="'discover' | 'extract' | 'stage' | 'embed' | 'publish'">
+  Which pipeline phase this job represents
+</ResponseField>
+
+<ResponseField name="status" type="'queued' | 'running' | 'done' | 'failed'">
+  Current job status
+</ResponseField>
+
+<ResponseField name="progress" type="number">
+  Progress percentage (0-100)
+</ResponseField>
+
+<ResponseField name="error" type="string" optional>
+  Error message if status is `failed`
+</ResponseField>
+
+<ResponseField name="startedAt" type="number" optional>
+  Unix timestamp when job started running
+</ResponseField>
+
+<ResponseField name="finishedAt" type="number" optional>
+  Unix timestamp when job completed or failed
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when job was created
+</ResponseField>
+
+**Indexes:**
+- `by_person` - Fetch all jobs for a person
+
+---
+
+## sources
+
+Web sources (articles, videos, interviews) discovered during research.
+
+<ResponseField name="personId" type="Id<'persons'>">
+  Parent person ID
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  Source URL
+</ResponseField>
+
+<ResponseField name="type" type="'article' | 'video' | 'post' | 'interview' | 'other'">
+  Source type classification
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Source title
+</ResponseField>
+
+<ResponseField name="publishedAt" type="string" optional>
+  ISO date string if available (e.g., "2019-03-15")
+</ResponseField>
+
+<ResponseField name="metadata" type="string">
+  JSON string with additional metadata (author, description, etc.)
+</ResponseField>
+
+<ResponseField name="rawText" type="string" optional>
+  Extracted full text for articles (up to 20K chars)
+</ResponseField>
+
+<ResponseField name="transcriptText" type="string" optional>
+  YouTube transcript for videos (up to 30K chars)
+</ResponseField>
+
+<ResponseField name="qualityScore" type="number">
+  Quality/relevance score (0-1)
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when source was added
+</ResponseField>
+
+**Indexes:**
+- `by_person` - Fetch all sources for a person
+- `by_person_url` - Check if a URL already exists for a person (deduplication)
+
+---
+
+## stages
+
+Life stages/eras identified by AI (e.g., "[18-24] - Early Builder").
+
+<ResponseField name="personId" type="Id<'persons'>">
+  Parent person ID
+</ResponseField>
+
+<ResponseField name="order" type="number">
+  Chronological order (0, 1, 2, ...)
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Stage title (format: "[ageStart-ageEnd] - Role: Description")
+</ResponseField>
+
+<ResponseField name="ageStart" type="number">
+  Starting age for this stage
+</ResponseField>
+
+<ResponseField name="ageEnd" type="number">
+  Ending age for this stage
+</ResponseField>
+
+<ResponseField name="dateStart" type="string">
+  ISO date string or "unknown" (e.g., "2014-01-01")
+</ResponseField>
+
+<ResponseField name="dateEnd" type="string">
+  ISO date string, "present", or "unknown"
+</ResponseField>
+
+<ResponseField name="eraSummary" type="string">
+  AI-generated summary of what happened during this stage
+</ResponseField>
+
+<ResponseField name="worldviewSummary" type="string">
+  AI-generated summary of the person's worldview/mindset during this stage
+</ResponseField>
+
+<ResponseField name="turningPoints" type="string[]">
+  Array of key turning points (up to 6)
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  AI's confidence score for this stage (0-1)
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when stage was created
+</ResponseField>
+
+**Indexes:**
+- `by_person` - Fetch all stages for a person
+- `by_person_order` - Fetch stages in chronological order
+
+---
+
+## chunks
+
+Text chunks with embeddings for semantic search (RAG).
+
+<ResponseField name="personId" type="Id<'persons'>">
+  Parent person ID
+</ResponseField>
+
+<ResponseField name="sourceId" type="Id<'sources'>">
+  Source this chunk came from
+</ResponseField>
+
+<ResponseField name="stageId" type="Id<'stages'>" optional>
+  Stage this chunk is mapped to (via source-to-stage links)
+</ResponseField>
+
+<ResponseField name="text" type="string">
+  Chunk text content (up to 1200 characters)
+</ResponseField>
+
+<ResponseField name="embedding" type="number[]">
+  Vector embedding (1536 dimensions for `text-embedding-3-small`)
+</ResponseField>
+
+<ResponseField name="citation" type="string">
+  JSON string with source metadata: `{"sourceId": "...", "title": "...", "url": "...", "publishedAt": "..."}`
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when chunk was created
+</ResponseField>
+
+**Indexes:**
+- `by_person` - Fetch all chunks for a person (used in cross-stage fallback)
+- `by_stage` - Fetch chunks for a specific stage (used in stage-scoped retrieval)
+
+---
+
+## stageSourceLinks
+
+Maps sources to stages with relevance scores.
+
+<ResponseField name="stageId" type="Id<'stages'>">
+  Stage ID
+</ResponseField>
+
+<ResponseField name="sourceId" type="Id<'sources'>">
+  Source ID
+</ResponseField>
+
+<ResponseField name="relevance" type="number">
+  Relevance score (0-1)
+</ResponseField>
+
+<ResponseField name="rationale" type="string">
+  AI-generated explanation of why this source maps to this stage
+</ResponseField>
+
+**Indexes:**
+- `by_stage` - Fetch all sources for a stage
+- `by_source` - Fetch all stages for a source
+
+---
+
+## timelineCards
+
+Visual cards displayed on the timeline UI.
+
+<ResponseField name="stageId" type="Id<'stages'>">
+  Parent stage ID
+</ResponseField>
+
+<ResponseField name="type" type="'moment' | 'quote' | 'media' | 'turning_point' | 'image' | 'video'">
+  Card type determines rendering style
+</ResponseField>
+
+<ResponseField name="headline" type="string">
+  Card headline/title
+</ResponseField>
+
+<ResponseField name="body" type="string">
+  Card body text
+</ResponseField>
+
+<ResponseField name="mediaRef" type="string" optional>
+  URL for media content (image URL, YouTube video ID, etc.)
+</ResponseField>
+
+<ResponseField name="order" type="number">
+  Display order within the stage (0, 1, 2, ...)
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when card was created
+</ResponseField>
+
+**Indexes:**
+- `by_stage` - Fetch all cards for a stage
+
+---
+
+## chatSessions
+
+Chat sessions scoped to a person, stage, and optional client.
+
+<ResponseField name="personId" type="Id<'persons'>">
+  Person being chatted with
+</ResponseField>
+
+<ResponseField name="stageId" type="Id<'stages'>">
+  Life stage/era for this conversation
+</ResponseField>
+
+<ResponseField name="clientId" type="string" optional>
+  Optional client identifier for session isolation
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when session was created
+</ResponseField>
+
+**Indexes:**
+- `by_person_stage` - Lookup session for person/stage (shared sessions)
+- `by_person_stage_client` - Lookup session for person/stage/client (isolated sessions)
+
+---
+
+## chatMessages
+
+Individual messages within chat sessions.
+
+<ResponseField name="sessionId" type="Id<'chatSessions'>">
+  Parent session ID
+</ResponseField>
+
+<ResponseField name="role" type="'user' | 'assistant'">
+  Message role
+</ResponseField>
+
+<ResponseField name="content" type="string">
+  Message text content
+</ResponseField>
+
+<ResponseField name="citations" type="string[]">
+  Array of source citations (only populated for assistant messages)
+</ResponseField>
+
+<ResponseField name="usedFallback" type="boolean">
+  Whether cross-stage retrieval was used (only relevant for assistant messages)
+</ResponseField>
+
+<ResponseField name="createdAt" type="number">
+  Unix timestamp when message was created
+</ResponseField>
+
+**Indexes:**
+- `by_session` - Fetch all messages for a session (sorted by createdAt)
+
+---
+
+## Entity Relationships
+
+```
+persons
+  ├─ jobs (by_person)
+  ├─ sources (by_person)
+  │   └─ chunks (by_source)
+  ├─ stages (by_person_order)
+  │   ├─ stageSourceLinks (by_stage)
+  │   ├─ chunks (by_stage)
+  │   ├─ timelineCards (by_stage)
+  │   └─ chatSessions (by_person_stage)
+  │       └─ chatMessages (by_session)
+  └─ chunks (by_person) — cross-stage fallback
+```
+
+## Source Reference
+
+See `convex/schema.ts` for the complete schema definition with Convex validators.

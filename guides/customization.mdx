@@ -1,0 +1,648 @@
+---
+title: 'Customization'
+description: 'Customize UI, branding, and pipeline behavior in LORE Timeline'
+---
+
+LORE Timeline is highly customizable. This guide covers UI theming, branding, and pipeline behavior customization.
+
+## UI Theming
+
+The design system uses CSS custom properties for colors and Tailwind CSS for styling.
+
+---
+
+## Color Palette
+
+**File**: `~/workspace/source/app/globals.css:3-12`
+
+The color palette is defined in `:root` CSS variables:
+
+<CodeGroup>
+```css globals.css
+:root {
+  --paper: #f4efe7;      /* Background, warm off-white */
+  --ink: #171310;        /* Primary text, dark brown */
+  --panel: #fffaf2;      /* Card backgrounds, light cream */
+  --accent: #c34628;     /* Primary accent, rust red */
+  --frame: #2c2420;      /* Borders and outlines, dark brown */
+  --muted: #a09888;      /* Secondary text, muted brown */
+  --success: #2d6a4f;    /* Success states, green */
+  --warn: #b5851b;       /* Warning states, amber */
+}
+```
+</CodeGroup>
+
+### Customizing Colors
+
+To change the color scheme:
+
+<Steps>
+  <Step title="Edit CSS Variables">
+    Open `~/workspace/source/app/globals.css` and modify the values:
+    
+    ```css
+    :root {
+      --paper: #f0f4f8;      /* Cool gray background */
+      --ink: #1a202c;        /* Dark slate text */
+      --panel: #ffffff;      /* Pure white panels */
+      --accent: #3182ce;     /* Blue accent */
+      --frame: #2d3748;      /* Dark gray borders */
+      --muted: #718096;      /* Medium gray muted text */
+      --success: #38a169;    /* Green success */
+      --warn: #ed8936;       /* Orange warning */
+    }
+    ```
+  </Step>
+  
+  <Step title="Test in Development">
+    Start the dev server to see changes live:
+    ```bash
+    npm run dev
+    ```
+  </Step>
+  
+  <Step title="Verify Across Components">
+    Check that colors work well in:
+    - Hero section (`~/workspace/source/app/page.tsx:106-247`)
+    - Timeline cards
+    - Chat interface
+    - Status badges (`~/workspace/source/app/page.tsx:227-237`)
+  </Step>
+</Steps>
+
+<Note>
+CSS variables are referenced throughout the codebase with `var(--variable-name)`. Changing the value in `globals.css` updates all instances automatically.
+</Note>
+
+---
+
+## Typography
+
+**File**: `~/workspace/source/app/layout.tsx:2-16`
+
+LORE uses Google Fonts:
+
+<CodeGroup>
+```typescript layout.tsx
+import { Bebas_Neue, IBM_Plex_Sans } from "next/font/google";
+
+const display = Bebas_Neue({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-display",
+});
+
+const body = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-body",
+});
+```
+</CodeGroup>
+
+### Customizing Fonts
+
+<Steps>
+  <Step title="Choose Fonts">
+    Browse [Google Fonts](https://fonts.google.com) and select:
+    - A **display font** for headings (bold, impactful)
+    - A **body font** for text (readable, multiple weights)
+  </Step>
+  
+  <Step title="Update Imports">
+    Replace the font imports in `layout.tsx`:
+    
+    ```typescript
+    import { Montserrat, Inter } from "next/font/google";
+    
+    const display = Montserrat({
+      subsets: ["latin"],
+      weight: ["700", "900"],
+      variable: "--font-display",
+    });
+    
+    const body = Inter({
+      subsets: ["latin"],
+      weight: ["400", "500", "600", "700"],
+      variable: "--font-body",
+    });
+    ```
+  </Step>
+  
+  <Step title="Update CSS">
+    Font variables are already wired up in `globals.css:15, 32, 38`:
+    
+    ```css
+    body {
+      font-family: var(--font-body), sans-serif;
+    }
+    
+    h1, h2, h3 {
+      font-family: var(--font-display), sans-serif;
+    }
+    ```
+    
+    No changes needed here unless you want to adjust font stacks.
+  </Step>
+</Steps>
+
+---
+
+## Branding
+
+### Logo
+
+**File**: `~/workspace/source/app/page.tsx:116-123`
+
+The logo is rendered as an image:
+
+<CodeGroup>
+```typescript page.tsx
+<Image
+  src="/lore-logo.png"
+  alt="LORE"
+  width={160}
+  height={48}
+  className="h-12 w-auto"
+  priority
+/>
+```
+</CodeGroup>
+
+**To customize**:
+
+<Steps>
+  <Step title="Create Logo">
+    Design your logo (PNG, SVG, or WebP). Recommended size: 320x96px (2x for retina)
+  </Step>
+  
+  <Step title="Add to Public Directory">
+    Save as `~/workspace/source/public/your-logo.png`
+  </Step>
+  
+  <Step title="Update Component">
+    Edit `app/page.tsx:117`:
+    ```typescript
+    <Image
+      src="/your-logo.png"
+      alt="Your Brand"
+      width={160}
+      height={48}
+      className="h-12 w-auto"
+      priority
+    />
+    ```
+  </Step>
+  
+  <Step title="Update Footer Logo">
+    Also update the footer logo at `app/page.tsx:337-342`:
+    ```typescript
+    <Image
+      src="/your-logo.png"
+      alt="Your Brand"
+      width={80}
+      height={24}
+      className="h-6 w-auto"
+    />
+    ```
+  </Step>
+</Steps>
+
+### Site Metadata
+
+**File**: `~/workspace/source/app/layout.tsx:18-25`
+
+<CodeGroup>
+```typescript layout.tsx
+export const metadata: Metadata = {
+  title: "LORE — Interactive Biography Engine",
+  description: "Deep-research biography timelines with era-specific chat. Enter any name and explore their life story.",
+  icons: {
+    icon: "/favicon.png",
+    apple: "/favicon.png",
+  },
+};
+```
+</CodeGroup>
+
+**To customize**:
+
+<Steps>
+  <Step title="Update Title and Description">
+    ```typescript
+    export const metadata: Metadata = {
+      title: "MyBrand Timeline — AI-Powered Biographies",
+      description: "Discover life stories through AI-researched timelines and conversations.",
+      icons: {
+        icon: "/favicon.png",
+        apple: "/favicon.png",
+      },
+    };
+    ```
+  </Step>
+  
+  <Step title="Create Favicon">
+    - Design a 32x32px or 64x64px PNG icon
+    - Save as `~/workspace/source/public/favicon.png`
+    - Optionally create additional sizes (16x16, 192x192, 512x512) for better support
+  </Step>
+</Steps>
+
+### Hero Section Copy
+
+**File**: `~/workspace/source/app/page.tsx:134-143`
+
+<CodeGroup>
+```typescript page.tsx
+<p className="text-xs font-semibold uppercase tracking-widest text-[var(--accent)]">
+  Interactive Biography Engine
+</p>
+<h1 className="mt-3 text-balance text-5xl leading-none sm:text-7xl">
+  Every life is a story worth scrolling.
+</h1>
+<p className="mt-4 max-w-xl text-pretty text-base text-[var(--ink)]/80 sm:text-lg">
+  Enter any person. LORE researches the web, builds an era-by-era timeline with real
+  sources, and lets you chat with their perspective.
+</p>
+```
+</CodeGroup>
+
+**To customize**: Edit the text directly in `page.tsx`. Keep HTML structure for styling consistency.
+
+---
+
+## Features Section
+
+**File**: `~/workspace/source/app/page.tsx:11-55`
+
+The features section is defined as a constant array:
+
+<CodeGroup>
+```typescript page.tsx
+const FEATURES = [
+  {
+    title: "Deep Research",
+    description: "Discovers articles, interviews, YouTube talks, and podcasts across the web automatically.",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <circle cx="8.5" cy="8.5" r="6" stroke="currentColor" strokeWidth="2" />
+        <path d="M13.5 13.5L18 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  // ... more features
+];
+```
+</CodeGroup>
+
+**To customize**:
+
+1. Edit the `FEATURES` array (lines 11-55)
+2. Change `title`, `description`, or `icon` (SVG)
+3. Add/remove feature objects as needed
+4. The layout automatically adjusts for 1-8 features
+
+---
+
+## Pipeline Steps
+
+**File**: `~/workspace/source/app/page.tsx:57-63`
+
+The "How It Works" section shows pipeline phases:
+
+<CodeGroup>
+```typescript page.tsx
+const STEPS = [
+  { label: "Discover", detail: "Search for sources" },
+  { label: "Extract", detail: "Pull full text" },
+  { label: "Stage", detail: "AI creates life eras" },
+  { label: "Embed", detail: "Index for semantic search" },
+  { label: "Publish", detail: "Build visual timeline" },
+];
+```
+</CodeGroup>
+
+**To customize**: Edit the `STEPS` array. The UI automatically renders arrows between steps and numbers them.
+
+---
+
+## Custom Styles
+
+### Comic Panel Cards
+
+**File**: `~/workspace/source/app/globals.css:94-104`
+
+<CodeGroup>
+```css globals.css
+.comic-panel {
+  border: 3px solid var(--frame);
+  border-radius: 0.75rem;
+  background: var(--panel);
+  box-shadow: 5px 5px 0 0 var(--frame);
+}
+
+.comic-panel--accent {
+  border-color: var(--accent);
+  box-shadow: 5px 5px 0 0 var(--accent);
+}
+```
+</CodeGroup>
+
+**Used in**: Feature cards (`page.tsx:319`), timeline cards, and chat interface.
+
+**To customize**: 
+- Change `border-radius` for rounder/sharper corners
+- Adjust `box-shadow` offset (5px) for depth effect
+- Modify `border` width (3px) for thicker/thinner outlines
+
+### Timeline Spine
+
+**File**: `~/workspace/source/app/globals.css:48-90`
+
+<CodeGroup>
+```css globals.css
+.timeline-spine::before {
+  content: "";
+  position: absolute;
+  left: 1.25rem;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--frame);
+}
+
+.spine-dot {
+  position: absolute;
+  left: calc(-3rem + 1.25rem - 7px);
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 3px solid var(--frame);
+  background: var(--panel);
+}
+
+.spine-dot--active {
+  background: var(--accent);
+}
+```
+</CodeGroup>
+
+**To customize**:
+- Change `width: 3px` on `.timeline-spine::before` to adjust line thickness
+- Modify `.spine-dot` dimensions for larger/smaller dots
+- Edit `border` width on `.spine-dot` for outline thickness
+
+---
+
+## Pipeline Behavior Customization
+
+The ingestion pipeline can be customized in `~/workspace/source/convex/pipeline.ts`.
+
+### Discovery Search Strategy
+
+**Location**: `~/workspace/source/convex/pipeline.ts:751-771`
+
+You can modify the LLM prompt that generates search queries:
+
+<CodeGroup>
+```typescript pipeline.ts
+const queryPlanJson = await generateJson(
+  `You are a research agent. Given a person's name, generate a comprehensive set of search queries to discover biographical sources about them.
+
+The person could be ANYONE — a musician, athlete, politician, scientist, actor, entrepreneur, activist, author, etc. Tailor queries to their likely domain.
+
+Output a JSON object: { "queries": [...] }
+
+Each query object has:
+- "query": the search string (use quotes around the person's name for precision)
+- "type": "web" or "video"
+- "dateEnd": optional ISO date string to find older/historical content (e.g. "2010-01-01")
+
+Generate 8-12 queries total. Include:
+1. 2-3 general biography/profile web searches
+2. 2-3 domain-specific web searches (e.g. discography for musicians, match highlights for athletes, policy speeches for politicians)
+3. 2-3 mainstream video searches (interviews, talks, appearances relevant to their field)
+4. 2-3 underground/rare/early video searches (before they were famous, small venues, niche podcasts, campus events, early career footage)
+5. 1 search specifically for OLD content (set dateEnd to filter for historical material)
+
+IMPORTANT: Use the person's full name in quotes in every query for precision.`,
+  JSON.stringify({ personName: person.name }),
+);
+```
+</CodeGroup>
+
+**Customization ideas**:
+- Increase query count: Change "8-12 queries" to "15-20 queries" for deeper discovery
+- Add domain hints: Provide additional context (e.g., "This person is a tech founder")
+- Adjust query types: Favor videos over articles, or vice versa
+
+### Stage Creation Logic
+
+**Location**: `~/workspace/source/convex/pipeline.ts:953-956`
+
+<CodeGroup>
+```typescript pipeline.ts
+const stageJson = await generateJson(
+  "You create biographical life stages by age-era first, then refine with context shifts. Output strict JSON object with key 'stages'. Each stage: order, title, ageStart, ageEnd, dateStart, dateEnd, eraSummary, worldviewSummary, turningPoints (array), confidence. Title MUST look like '[18-24] - Startup Operator: Early Builder'. Use 3-7 stages.",
+  JSON.stringify({ person: person.name, sources: sourceDigest }),
+);
+```
+</CodeGroup>
+
+**Customization ideas**:
+- **More granular eras**: Change "Use 3-7 stages" to "Use 7-12 stages" for finer detail
+- **Thematic staging**: Modify prompt to focus on thematic periods instead of age (e.g., "Career phases")
+- **Custom title format**: Change title pattern from "[age] - title" to "Era X: title"
+
+### Source Quality Threshold
+
+**Location**: `~/workspace/source/convex/pipeline.ts:693`
+
+When seeding sources, quality score affects ranking:
+
+<CodeGroup>
+```typescript pipeline.ts
+await ctx.db.insert("sources", {
+  personId,
+  url,
+  title: url,
+  type: "other",
+  metadata: JSON.stringify({ seeded: true }),
+  qualityScore: 0.4,  // Adjust this threshold
+  createdAt: now,
+});
+```
+</CodeGroup>
+
+**To customize**: Increase `qualityScore` (0.0-1.0) to prioritize certain sources in chat retrieval.
+
+### Chunk Size for Embeddings
+
+**Location**: `~/workspace/source/convex/pipeline.ts:127, 1251`
+
+<CodeGroup>
+```typescript pipeline.ts
+function splitChunks(text: string, maxChars = 1200): string[] {
+  // ...
+}
+
+const CHUNKS_PER_SOURCE = 10;
+```
+</CodeGroup>
+
+**To customize**:
+- **Smaller chunks** (e.g., 600 chars): Better for precise quote retrieval, more embeddings (higher cost)
+- **Larger chunks** (e.g., 2400 chars): Better for context, fewer embeddings (lower cost)
+- **More chunks per source** (e.g., 20): Deeper indexing, higher cost
+
+<Warning>
+Changing chunk size or count requires re-running the embed phase for existing data.
+</Warning>
+
+### Deep Research Per Stage
+
+**Location**: `~/workspace/source/convex/pipeline.ts:1098-1156`
+
+Deep research runs additional searches for each stage. You can:
+
+1. **Disable deep research**: Comment out the loop (lines 1098-1205)
+2. **Increase queries per stage**: Change `slice(0, 10)` to `slice(0, 15)` (line 1139)
+3. **Modify query prompt**: Edit the prompt at lines 1101-1128 to focus on specific content types
+
+---
+
+## Advanced Customization
+
+### Custom React Components
+
+To add custom UI components:
+
+<Steps>
+  <Step title="Create Component File">
+    ```bash
+    mkdir -p ~/workspace/source/components
+    touch ~/workspace/source/components/CustomBanner.tsx
+    ```
+  </Step>
+  
+  <Step title="Define Component">
+    ```typescript
+    export default function CustomBanner() {
+      return (
+        <div className="rounded-xl border-2 border-[var(--frame)] bg-[var(--accent)] p-4 text-white">
+          <p className="font-semibold">Custom promotional banner</p>
+        </div>
+      );
+    }
+    ```
+  </Step>
+  
+  <Step title="Import and Use">
+    In `app/page.tsx`:
+    ```typescript
+    import CustomBanner from "@/components/CustomBanner";
+    
+    // Add in JSX
+    <CustomBanner />
+    ```
+  </Step>
+</Steps>
+
+### Custom Convex Functions
+
+To add backend logic:
+
+<Steps>
+  <Step title="Create Function File">
+    ```bash
+    touch ~/workspace/source/convex/analytics.ts
+    ```
+  </Step>
+  
+  <Step title="Define Function">
+    ```typescript
+    import { query } from "./_generated/server";
+    import { v } from "convex/values";
+    
+    export const getPersonStats = query({
+      args: { personId: v.id("persons") },
+      handler: async (ctx, args) => {
+        const person = await ctx.db.get(args.personId);
+        const sources = await ctx.db
+          .query("sources")
+          .withIndex("by_person", (q) => q.eq("personId", args.personId))
+          .collect();
+        const stages = await ctx.db
+          .query("stages")
+          .withIndex("by_person", (q) => q.eq("personId", args.personId))
+          .collect();
+        
+        return {
+          name: person?.name,
+          sourceCount: sources.length,
+          stageCount: stages.length,
+        };
+      },
+    });
+    ```
+  </Step>
+  
+  <Step title="Use in Frontend">
+    ```typescript
+    import { useQuery } from "convex/react";
+    import { api } from "@/convex/_generated/api";
+    
+    const stats = useQuery(api.analytics.getPersonStats, { personId });
+    ```
+  </Step>
+  
+  <Step title="Deploy">
+    ```bash
+    npx convex dev  # Auto-deploys in dev mode
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Testing Customizations
+
+<Steps>
+  <Step title="Start Dev Server">
+    ```bash
+    npm run dev
+    ```
+  </Step>
+  
+  <Step title="Test in Browser">
+    Open `http://localhost:3000` and verify:
+    - Colors render correctly
+    - Fonts load properly
+    - Logo displays at correct size
+    - Custom copy reads well
+  </Step>
+  
+  <Step title="Test Pipeline">
+    Generate a timeline for a test person:
+    1. Enter a name (e.g., "Albert Einstein")
+    2. Monitor Convex logs in dashboard
+    3. Verify custom pipeline behavior works
+  </Step>
+  
+  <Step title="Deploy to Preview">
+    Push to a feature branch and create a pull request to test in a preview deployment
+  </Step>
+</Steps>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    Deploy your customized LORE Timeline to production
+  </Card>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Fine-tune environment variables and settings
+  </Card>
+</CardGroup>

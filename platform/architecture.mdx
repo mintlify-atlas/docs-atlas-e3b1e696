@@ -1,0 +1,475 @@
+---
+title: 'Architecture Overview'
+description: 'System architecture, tech stack, and how all components connect'
+---
+
+## System Overview
+
+LORE Timeline is built as a full-stack TypeScript application combining modern web frameworks with AI services to create an intelligent biographical research platform.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        User Browser                          │
+│  ┌────────────────────────────────────────────────────┐     │
+│  │  Next.js 16 App (React 19)                         │     │
+│  │  - Server & Client Components                       │     │
+│  │  - Tailwind CSS Styling                            │     │
+│  │  - Motion Animations                               │     │
+│  └────────────────┬───────────────────────────────────┘     │
+└───────────────────┼─────────────────────────────────────────┘
+                    │
+                    │ Real-time WebSocket
+                    │
+┌───────────────────▼─────────────────────────────────────────┐
+│              Convex Backend Platform                         │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Queries (Read)      Mutations (Write)               │   │
+│  │  • getPerson         • createPerson                  │   │
+│  │  • getTimeline       • bootstrapPerson               │   │
+│  │  • getStageSources   • startIngestion                │   │
+│  └──────────────────────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Actions (Long-running)    Scheduled Jobs            │   │
+│  │  • runIngestion            • Phase Chaining          │   │
+│  │  • sendStageChat           • Pipeline Orchestration  │   │
+│  │  • scoreAndSelectChunks    • Retry Logic            │   │
+│  └──────────────────────────────────────────────────────┘   │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Database (Automatic)                                │   │
+│  │  • Reactive Subscriptions                            │   │
+│  │  • ACID Transactions                                 │   │
+│  │  • Vector Storage (embeddings)                       │   │
+│  └──────────────────────────────────────────────────────┘   │
+└────────────┬─────────────────────┬───────────────────────────┘
+             │                     │
+             │                     │
+   ┌─────────▼────────┐  ┌─────────▼────────┐
+   │  OpenAI API      │  │   Exa AI API     │
+   │  ──────────      │  │   ────────       │
+   │  • GPT-5.2       │  │  • Web Search    │
+   │  • Embeddings    │  │  • Content       │
+   │  • Chat          │  │  • Discovery     │
+   └──────────────────┘  └──────────────────┘
+```
+
+## Tech Stack
+
+### Frontend Layer
+
+<CodeGroup>
+```json package.json
+{
+  "dependencies": {
+    "next": "16.1.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "convex": "^1.31.7",
+    "motion": "^12.33.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.4.0"
+  }
+}
+```
+
+```typescript app/layout.tsx
+import { ConvexProvider, ConvexReactClient } from "convex/react";
+
+const convex = new ConvexReactClient(
+  process.env.NEXT_PUBLIC_CONVEX_URL!
+);
+
+export default function RootLayout({ children }) {
+  return (
+    <ConvexProvider client={convex}>
+      {children}
+    </ConvexProvider>
+  );
+}
+```
+</CodeGroup>
+
+**Next.js 16** provides the application framework with:
+- App Router for file-based routing
+- Server and Client Components for optimal rendering
+- React 19 for concurrent features and transitions
+- Built-in TypeScript support
+
+**Styling & Animation:**
+- Tailwind CSS 4 for utility-first styling
+- Motion (Framer Motion) for timeline scroll animations
+- Custom fonts: Bebas Neue (display) and IBM Plex Sans (body)
+
+### Backend Layer: Convex
+
+Convex is the complete backend platform providing:
+
+<Tabs>
+  <Tab title="Database">
+    **Reactive Database**
+    
+    Convex provides a fully managed database with:
+    - Automatic real-time subscriptions
+    - ACID transactions
+    - TypeScript schema validation
+    - Automatic indexes
+    - Vector storage for embeddings
+    
+    ```typescript convex/schema.ts
+    export default defineSchema({
+      persons: defineTable({
+        name: v.string(),
+        slug: v.string(),
+        status: v.union(
+          v.literal("pending"),
+          v.literal("processing"),
+          v.literal("ready"),
+          v.literal("failed")
+        ),
+        createdAt: v.number(),
+      }).index("by_slug", ["slug"]),
+      
+      chunks: defineTable({
+        personId: v.id("persons"),
+        text: v.string(),
+        embedding: v.array(v.float64()),
+        citation: v.string(),
+      }).index("by_person", ["personId"]),
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Functions">
+    **Three Function Types**
+    
+    <Steps>
+      <Step title="Queries (Read)">
+        Fast, cached reads with automatic subscriptions
+        ```typescript
+        export const getPerson = query({
+          args: { personId: v.id("persons") },
+          handler: async (ctx, args) => {
+            return ctx.db.get(args.personId);
+          },
+        });
+        ```
+      </Step>
+      
+      <Step title="Mutations (Write)">
+        Transactional writes that trigger reactive updates
+        ```typescript
+        export const createPerson = mutation({
+          args: { name: v.string() },
+          handler: async (ctx, args) => {
+            return ctx.db.insert("persons", {
+              name: args.name,
+              status: "pending",
+              createdAt: Date.now(),
+            });
+          },
+        });
+        ```
+      </Step>
+      
+      <Step title="Actions (External)">
+        Long-running operations that call external APIs
+        ```typescript
+        export const runIngestion = action({
+          args: { personId: v.id("persons") },
+          handler: async (ctx, args) => {
+            // Call OpenAI, Exa, fetch URLs
+            const result = await externalAPI();
+            // Write back via mutations
+            await ctx.runMutation(internal.pipeline.save, {
+              data: result
+            });
+          },
+        });
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  
+  <Tab title="Scheduling">
+    **Built-in Job Scheduler**
+    
+    Convex includes a scheduler for background jobs:
+    ```typescript
+    // Schedule ingestion pipeline
+    await ctx.scheduler.runAfter(
+      0, // milliseconds delay
+      api.pipeline.runIngestion,
+      { personId, phase: "discover" }
+    );
+    ```
+    
+    This enables:
+    - Pipeline phase chaining
+    - Automatic retries on transient failures
+    - Resumable long-running operations
+  </Tab>
+</Tabs>
+
+### AI Services
+
+<CardGroup cols={2}>
+  <Card title="OpenAI" icon="brain">
+    **Model Configuration**
+    ```typescript convex/llm.ts
+    const OPENAI_MODEL = "gpt-5.2";
+    const OPENAI_EMBED_MODEL = "text-embedding-3-small";
+    ```
+    
+    Used for:
+    - Text generation (biography stages, chat)
+    - Embeddings (semantic search)
+    - Structured JSON outputs
+  </Card>
+  
+  <Card title="Exa AI" icon="magnifying-glass">
+    **Search & Discovery**
+    ```typescript
+    const response = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: { "x-api-key": EXA_API_KEY },
+      body: JSON.stringify({ query, numResults: 10 })
+    });
+    ```
+    
+    Used for:
+    - Web content discovery
+    - Video search (YouTube)
+    - Date-filtered searches
+  </Card>
+</CardGroup>
+
+## Data Flow
+
+### User Request Flow
+
+<Steps>
+  <Step title="User enters a name">
+    Next.js page calls Convex mutation:
+    ```typescript
+    const { personId } = await createPerson({ name });
+    ```
+  </Step>
+  
+  <Step title="Bootstrap & Schedule">
+    Mutation creates database records and schedules ingestion:
+    ```typescript
+    const personId = await ctx.db.insert("persons", {...});
+    await ctx.scheduler.runAfter(0, api.pipeline.runIngestion);
+    ```
+  </Step>
+  
+  <Step title="Pipeline Execution">
+    Action runs through 5 phases (see [Data Pipeline](/platform/data-pipeline)):
+    - Discover → Extract → Stage → Embed → Publish
+  </Step>
+  
+  <Step title="Real-time Updates">
+    Frontend automatically receives updates via Convex subscriptions:
+    ```typescript
+    const result = useQuery(api.persons.getPerson, { personId });
+    // Re-renders automatically when status changes
+    ```
+  </Step>
+</Steps>
+
+### Chat Flow (RAG)
+
+```
+User Question
+     |
+     v
+1. Embed query → OpenAI embeddings
+     |
+     v
+2. Vector search → Cosine similarity across chunks
+     |
+     v
+3. Retrieve top 8 chunks → Stage-scoped or fallback
+     |
+     v
+4. Build context → Evidence + voice samples + stage info
+     |
+     v
+5. Generate response → OpenAI GPT-5.2
+     |
+     v
+6. Return answer + citations
+```
+
+See [AI Models](/platform/ai-models) for detailed RAG implementation.
+
+## Database Schema
+
+<Accordion title="Core Tables">
+  **persons** - Biography subjects
+  ```typescript
+  {
+    name: string,
+    slug: string,
+    status: "pending" | "processing" | "ready" | "failed",
+    birthDate?: string,
+    createdAt: number,
+    updatedAt: number
+  }
+  ```
+  
+  **jobs** - Pipeline tracking
+  ```typescript
+  {
+    personId: Id<"persons">,
+    phase: "discover" | "extract" | "stage" | "embed" | "publish",
+    status: "queued" | "running" | "done" | "failed",
+    progress: number,
+    error?: string
+  }
+  ```
+  
+  **sources** - Discovered content
+  ```typescript
+  {
+    personId: Id<"persons">,
+    url: string,
+    title: string,
+    type: "article" | "video" | "post" | "interview" | "other",
+    rawText?: string,
+    transcriptText?: string,
+    qualityScore: number
+  }
+  ```
+  
+  **stages** - Life stages
+  ```typescript
+  {
+    personId: Id<"persons">,
+    order: number,
+    title: string,
+    ageStart: number,
+    ageEnd: number,
+    eraSummary: string,
+    worldviewSummary: string,
+    turningPoints: string[],
+    confidence: number
+  }
+  ```
+  
+  **chunks** - Embedded text for RAG
+  ```typescript
+  {
+    personId: Id<"persons">,
+    sourceId: Id<"sources">,
+    stageId?: Id<"stages">,
+    text: string,
+    embedding: number[], // 1536-dim vector
+    citation: string // JSON
+  }
+  ```
+</Accordion>
+
+## Environment Configuration
+
+```bash .env.local
+# Convex
+NEXT_PUBLIC_CONVEX_URL=https://your-deployment.convex.cloud
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.2
+OPENAI_EMBED_MODEL=text-embedding-3-small
+
+# Exa AI
+EXA_API_KEY=exa_...
+```
+
+<Note>
+All API keys are accessed server-side in Convex actions. Only `NEXT_PUBLIC_CONVEX_URL` is exposed to the browser.
+</Note>
+
+## Deployment Architecture
+
+<CardGroup cols={2}>
+  <Card title="Frontend: Vercel" icon="rocket">
+    Next.js application deployed to Vercel:
+    - Global edge network
+    - Automatic HTTPS
+    - Preview deployments
+    - Zero-config builds
+  </Card>
+  
+  <Card title="Backend: Convex Cloud" icon="database">
+    Convex backend is fully managed:
+    - Automatic scaling
+    - Built-in monitoring
+    - Real-time subscriptions
+    - Global distribution
+  </Card>
+</CardGroup>
+
+## Key Design Decisions
+
+<AccordionGroup>
+  <Accordion title="Why Convex over traditional backend?">
+    **Benefits:**
+    - No API routes to write - direct function calls
+    - Automatic real-time subscriptions
+    - Built-in scheduling for pipeline phases
+    - Type-safe end-to-end
+    - Integrated database + functions + jobs
+    
+    **Trade-offs:**
+    - Vendor lock-in (but migration path exists)
+    - Learning curve for team
+    - Less ecosystem compared to Express/Postgres
+  </Accordion>
+  
+  <Accordion title="Why store embeddings in Convex vs dedicated vector DB?">
+    **Rationale:**
+    - Keeps all data in one system
+    - Cosine similarity is computed in-memory (fast enough for under 10k chunks/person)
+    - Avoids another service to manage
+    - Can migrate to Pinecone/Weaviate if scale requires
+    
+    Current implementation: `convex/pipeline.ts:140-152`
+  </Accordion>
+  
+  <Accordion title="Why phase-based pipeline vs single job?">
+    **Advantages:**
+    - Resumable: Each phase persists results before chaining
+    - Debuggable: Can inspect state between phases
+    - Timeout-resistant: Phases schedule next phase, so timeouts don't lose work
+    - Flexible: Can re-run specific phases
+    
+    See [Data Pipeline](/platform/data-pipeline) for implementation details.
+  </Accordion>
+</AccordionGroup>
+
+## Performance Characteristics
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| Query (cached) | Under 50ms | Convex edge cache |
+| Mutation | 100-300ms | Database write + broadcast |
+| Action (simple) | 200-500ms | External API call |
+| Full ingestion | 3-8 minutes | All 5 phases for new person |
+| Embed phase | 30-90 seconds | Batch embedding 100-500 chunks |
+| Chat response | 1-3 seconds | Retrieval + GPT-5.2 generation |
+
+<Warning>
+The **embed** phase can consume significant OpenAI tokens. We batch 20 texts per API call and limit to 10 chunks per source to control costs.
+
+See `convex/pipeline.ts:1224-1326` for implementation.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Pipeline" icon="arrow-progress" href="/platform/data-pipeline">
+    Deep dive into all 5 pipeline phases
+  </Card>
+  <Card title="AI Models" icon="brain-circuit" href="/platform/ai-models">
+    Learn about RAG, embeddings, and chat
+  </Card>
+</CardGroup>

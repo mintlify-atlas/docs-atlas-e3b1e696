@@ -1,0 +1,234 @@
+---
+title: LLM functions
+description: OpenAI integration for embeddings, structured JSON generation, and chat completions
+---
+
+The `llm` module provides all AI model interactions via OpenAI's API, including text embeddings for RAG, structured JSON generation for pipeline tasks, and chat completions for user conversations.
+
+## Configuration
+
+Configure these environment variables in your Convex deployment:
+
+<ParamField path="OPENAI_API_KEY" type="string" required>
+  Your OpenAI API key. Required for all LLM functions.
+</ParamField>
+
+<ParamField path="OPENAI_MODEL" type="string" default="gpt-5.2">
+  The chat completion model to use for structured JSON and chat responses.
+</ParamField>
+
+<ParamField path="OPENAI_EMBED_MODEL" type="string" default="text-embedding-3-small">
+  The embedding model to use for vector generation.
+</ParamField>
+
+## Actions
+
+All LLM functions are implemented as Convex actions (not mutations) because they make external API calls.
+
+### embedText
+
+Generates a vector embedding for a single text string.
+
+<ParamField path="text" type="string" required>
+  The text to embed (up to ~8,000 tokens depending on model)
+</ParamField>
+
+**Returns:** `number[]` - The embedding vector (1536 dimensions for `text-embedding-3-small`)
+
+```typescript
+const embedding = await embedText({ 
+  text: "Sam Altman discusses the future of AI" 
+});
+// [0.023, -0.015, 0.087, ...] (1536 numbers)
+```
+
+<Note>
+Used by the pipeline to embed user queries for semantic search during chat retrieval.
+</Note>
+
+### embedTextBatch
+
+Generates embeddings for multiple texts in a single API call. More efficient than calling `embedText` multiple times.
+
+<ParamField path="texts" type="string[]" required>
+  Array of texts to embed
+</ParamField>
+
+**Returns:** `number[][]` - Array of embedding vectors in the same order as input texts
+
+```typescript
+const embeddings = await embedTextBatch({ 
+  texts: [
+    "First chunk of text",
+    "Second chunk of text",
+    "Third chunk of text"
+  ]
+});
+// [
+//   [0.023, -0.015, ...],
+//   [0.041, 0.002, ...],
+//   [-0.008, 0.034, ...]
+// ]
+```
+
+<Info>
+The pipeline uses batch embedding during the **Embed phase** to process up to 20 chunks at a time, significantly improving throughput.
+</Info>
+
+**Retry logic:**
+
+Both `embedText` and `embedTextBatch` automatically retry on:
+- HTTP 429 (rate limit)
+- HTTP 502, 503 (server errors)
+- Network failures
+
+Retries use exponential backoff: 1s, 2s, 4s, up to 8s max delay.
+
+### generateStructuredJson
+
+Generates structured JSON output from an LLM prompt. Used throughout the pipeline for tasks like query generation, source vetting, stage creation, and source-to-stage mapping.
+
+<ParamField path="system" type="string" required>
+  System prompt that defines the task and output schema
+</ParamField>
+
+<ParamField path="user" type="string" required>
+  User prompt with the specific input data
+</ParamField>
+
+**Returns:** `string` - The LLM's response as a JSON string
+
+```typescript
+const result = await generateStructuredJson({
+  system: `You are a search query generator. Output JSON: { "queries": ["query1", "query2"] }`,
+  user: JSON.stringify({ personName: "Elon Musk" })
+});
+
+const parsed = JSON.parse(result);
+// { queries: ["Elon Musk early companies", "Elon Musk interviews"] }
+```
+
+**Model configuration:**
+- Uses `response_format: { type: "json_object" }` to ensure valid JSON output
+- Temperature: `0.2` (low temperature for more deterministic, structured output)
+- Model: Configured via `OPENAI_MODEL` (default: `gpt-5.2`)
+
+**Pipeline usage:**
+
+<CardGroup cols={2}>
+  <Card title="Query generation" icon="magnifying-glass">
+    Generate 8-12 search queries tailored to a person's likely domain (musician, athlete, founder, etc.)
+  </Card>
+  
+  <Card title="Source vetting" icon="shield-check">
+    Verify which sources are genuinely about the target person (not someone with a similar name)
+  </Card>
+  
+  <Card title="Stage creation" icon="timeline">
+    Generate 3-7 life stages with summaries, turning points, and worldview shifts
+  </Card>
+  
+  <Card title="Source mapping" icon="link">
+    Map each source to the most relevant stage with a relevance score and rationale
+  </Card>
+</CardGroup>
+
+### generateChatReply
+
+Generates a natural language chat response. Used by `sendStageChat` to respond to user messages in the person's voice.
+
+<ParamField path="system" type="string" required>
+  System prompt that defines the persona, worldview, and voice samples
+</ParamField>
+
+<ParamField path="user" type="string" required>
+  User message plus retrieved evidence chunks and citations
+</ParamField>
+
+**Returns:** `string` - The AI-generated response in plain text (no markdown)
+
+```typescript
+const answer = await generateChatReply({
+  system: `You ARE Sam Altman. You are in the [2014-2019] - YC President era. Your worldview: pragmatic optimism about technology. Speak naturally in first person.`,
+  user: `User question: What motivated you to join Y Combinator?\n\nEvidence:\n1. "I wanted to help more founders..." [source: Interview 2015]`
+});
+
+// "I joined YC because I saw firsthand how hard it is for..."
+```
+
+**Model configuration:**
+- Temperature: `0.3` (slightly higher than structured JSON for more natural language)
+- Model: Configured via `OPENAI_MODEL` (default: `gpt-5.2`)
+- No markdown formatting enforced (system prompt instructs the model to use plain text)
+
+**Voice matching:**
+
+The system prompt includes:
+1. **Worldview summary** from the stage
+2. **Real quotes** extracted from transcripts and articles (up to 6 samples)
+3. **Tone instructions** to match formality, humor, and energy
+
+This ensures the AI's responses are indistinguishable from how the person actually talks in interviews and podcasts.
+
+## Error Handling
+
+All functions include automatic retry logic with exponential backoff:
+
+```typescript
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  maxRetries = 3
+): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      
+      // Retry on transient errors
+      if ([429, 502, 503].includes(response.status) && attempt < maxRetries) {
+        await delay(Math.min(1000 * Math.pow(2, attempt), 8000));
+        continue;
+      }
+      
+      return response;
+    } catch (err) {
+      if (attempt < maxRetries) {
+        await delay(Math.min(1000 * Math.pow(2, attempt), 8000));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+```
+
+<Warning>
+If `OPENAI_API_KEY` is not set, all functions will throw: `"Missing OPENAI_API_KEY"`
+</Warning>
+
+## Cost Optimization
+
+**Embeddings:**
+- `text-embedding-3-small`: $0.02 per 1M tokens
+- Average timeline uses ~500KB of text → ~125K tokens → ~$0.0025 per timeline
+- Batch processing reduces API overhead by ~60%
+
+**Chat completions:**
+- `gpt-5.2` pricing varies by provider
+- Structured JSON: ~2-4K tokens per call
+- Chat replies: ~1-2K tokens per message
+- System prompts include only essential context (stage summary + voice samples)
+
+**Best practices:**
+- Use batch embedding for chunks (20 at a time)
+- Limit voice samples to 6 quotes max
+- Cache embeddings (chunks are never re-embedded unless the source changes)
+- Use stage-scoped retrieval first (fewer chunks = faster + cheaper)
+
+## Source Reference
+
+See `convex/llm.ts` for full implementation including:
+- Retry logic with exponential backoff
+- Error handling and logging
+- Model configuration
+- Type definitions for OpenAI API responses

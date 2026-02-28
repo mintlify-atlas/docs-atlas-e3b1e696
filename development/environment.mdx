@@ -1,0 +1,286 @@
+---
+title: "Environment Configuration"
+description: "Configure environment variables for LORE Timeline development"
+---
+
+## Environment Variables Overview
+
+LORE Timeline requires specific environment variables to function properly. These variables configure API integrations, model settings, and deployment credentials.
+
+## Development vs Production
+
+<CardGroup cols={2}>
+  <Card title="Development" icon="laptop-code">
+    Uses `.env.local` file in project root. Variables are loaded automatically by Next.js during development.
+  </Card>
+  <Card title="Production" icon="cloud">
+    Uses deployment platform environment variables (Vercel, Railway, etc.) and Convex deploy keys.
+  </Card>
+</CardGroup>
+
+## Required Environment Variables
+
+### OpenAI API Key
+
+**Required for all AI operations including biography generation, embeddings, and chat.**
+
+```bash .env.local
+OPENAI_API_KEY=sk-proj-...your-key-here
+```
+
+<Steps>
+  <Step title="Obtain API Key">
+    1. Go to https://platform.openai.com/api-keys
+    2. Sign in or create an OpenAI account
+    3. Click "Create new secret key"
+    4. Copy the key immediately (it won't be shown again)
+  </Step>
+
+  <Step title="Add to environment">
+    Create or edit `.env.local` in your project root:
+
+    ```bash
+    OPENAI_API_KEY=sk-proj-abc123...
+    ```
+  </Step>
+
+  <Step title="Verify configuration">
+    Restart your development server. The application will throw an error if the key is missing:
+
+    ```
+    Error: Missing OPENAI_API_KEY
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  **Never commit your `.env.local` file to version control.** It should be listed in `.gitignore`. API keys are sensitive credentials.
+</Warning>
+
+## Optional Environment Variables
+
+### OpenAI Model Configuration
+
+Customize which OpenAI models are used for different operations:
+
+```bash .env.local
+# Chat completion and structured JSON generation
+OPENAI_MODEL=gpt-5.2
+
+# Text embeddings for semantic search
+OPENAI_EMBED_MODEL=text-embedding-3-small
+```
+
+**Default values:**
+- `OPENAI_MODEL`: `gpt-5.2`
+- `OPENAI_EMBED_MODEL`: `text-embedding-3-small`
+
+<Note>
+  The application uses these models for:
+  - **Chat completions**: Generating biography content and answering user questions
+  - **Structured JSON**: Extracting timeline stages and metadata
+  - **Embeddings**: Creating vector representations for semantic search
+</Note>
+
+### Exa API Key
+
+**Optional: Enables enhanced web search for discovering biographical sources.**
+
+```bash .env.local
+EXA_API_KEY=your_exa_api_key_here
+```
+
+The Exa API enhances the "discover" phase of biography generation by:
+- Finding high-quality biographical content across the web
+- Discovering interviews, articles, and media about the person
+- Ranking sources by relevance and authority
+
+<Steps>
+  <Step title="Sign up for Exa">
+    Visit https://exa.ai/ and create an account to get your API key.
+  </Step>
+
+  <Step title="Add to environment">
+    ```bash .env.local
+    EXA_API_KEY=your_key_here
+    ```
+  </Step>
+
+  <Step title="Fallback behavior">
+    If `EXA_API_KEY` is not set, the discovery phase will skip external search and only use manually provided sources.
+  </Step>
+</Steps>
+
+## Production Environment Variables
+
+### Convex Deploy Key
+
+**Required for production and preview deployments.**
+
+```bash
+CONVEX_DEPLOY_KEY=prod:your-project-123:abc...
+```
+
+<Steps>
+  <Step title="Create deploy key">
+    1. Go to your Convex dashboard: https://dashboard.convex.dev
+    2. Select your project
+    3. Navigate to Settings → Deploy Keys
+    4. Create a **Production** or **Preview** deploy key
+  </Step>
+
+  <Step title="Add to deployment platform">
+    Add the key to your hosting platform's environment variables:
+
+    <CodeGroup>
+      ```bash Vercel
+      # In Vercel dashboard: Settings → Environment Variables
+      CONVEX_DEPLOY_KEY=prod:your-key
+      ```
+
+      ```bash Railway
+      # In Railway dashboard: Variables tab
+      CONVEX_DEPLOY_KEY=prod:your-key
+      ```
+
+      ```bash Netlify
+      # In Netlify dashboard: Site settings → Environment variables
+      CONVEX_DEPLOY_KEY=prod:your-key
+      ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+<Warning>
+  **Production deploy keys have full access to your database.** Keep them secure and never commit them to version control or share them publicly.
+</Warning>
+
+## Environment File Structure
+
+Your `.env.local` file should follow this structure:
+
+```bash .env.local
+# ============================================
+# LORE Timeline - Development Environment
+# ============================================
+
+# Required: OpenAI API for AI operations
+OPENAI_API_KEY=sk-proj-...
+
+# Optional: Customize OpenAI models
+OPENAI_MODEL=gpt-5.2
+OPENAI_EMBED_MODEL=text-embedding-3-small
+
+# Optional: Enhanced web search
+EXA_API_KEY=your_exa_key
+
+# Note: CONVEX_DEPLOY_KEY is NOT needed in development
+# It's automatically handled by `convex dev`
+```
+
+## Verifying Configuration
+
+After setting up environment variables, verify they're loaded correctly:
+
+<Steps>
+  <Step title="Check Convex environment">
+    Environment variables for Convex functions are set in the dashboard:
+
+    1. Go to https://dashboard.convex.dev
+    2. Select your project
+    3. Navigate to Settings → Environment Variables
+    4. Add `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_EMBED_MODEL`, and `EXA_API_KEY` (if using)
+  </Step>
+
+  <Step title="Restart development server">
+    After changing environment variables:
+
+    ```bash
+    # Stop the dev server (Ctrl+C)
+    npm run dev
+    ```
+  </Step>
+
+  <Step title="Test API integration">
+    Try creating a new person timeline in the application. If the OpenAI API key is working:
+    - The "discover" phase will start successfully
+    - You'll see progress updates in the Convex logs
+    - No "Missing OPENAI_API_KEY" errors will appear
+  </Step>
+</Steps>
+
+<Note>
+  Convex backend functions run in a Node.js environment and access environment variables via `process.env`. Next.js frontend code can only access environment variables prefixed with `NEXT_PUBLIC_`.
+</Note>
+
+## Security Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Never commit secrets" icon="shield-halved">
+    Add `.env.local` to `.gitignore` and never commit API keys to version control.
+  </Card>
+
+  <Card title="Rotate keys regularly" icon="arrows-rotate">
+    Periodically generate new API keys and update them in your environment.
+  </Card>
+
+  <Card title="Use least privilege" icon="lock">
+    Limit API key permissions to only what's necessary for the application.
+  </Card>
+
+  <Card title="Monitor usage" icon="chart-line">
+    Track API usage in OpenAI and Exa dashboards to detect anomalies.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Environment variables not loading">
+    **Issue**: Variables in `.env.local` aren't being recognized.
+
+    **Solution**:
+    1. Ensure the file is named exactly `.env.local` (not `.env` or `env.local`)
+    2. Place it in the project root (same directory as `package.json`)
+    3. Restart the development server completely
+    4. For Convex functions, set variables in the Convex dashboard
+  </Accordion>
+
+  <Accordion title="OpenAI API authentication failed">
+    **Issue**: Getting 401 Unauthorized errors from OpenAI.
+
+    **Solution**:
+    1. Verify your API key is correct and hasn't been revoked
+    2. Check your OpenAI account has credits: https://platform.openai.com/usage
+    3. Ensure no extra spaces or quotes in the `OPENAI_API_KEY` value
+    4. Update the key in both `.env.local` and Convex dashboard environment variables
+  </Accordion>
+
+  <Accordion title="Different behavior in development vs production">
+    **Issue**: Application works locally but fails in production.
+
+    **Solution**:
+    1. Check that all required environment variables are set in your hosting platform
+    2. Verify the `CONVEX_DEPLOY_KEY` is configured for production
+    3. Ensure Convex dashboard environment variables match your production needs
+    4. Review deployment logs for environment-related errors
+  </Accordion>
+
+  <Accordion title="Exa API not working">
+    **Issue**: Source discovery phase isn't finding external content.
+
+    **Solution**:
+    1. If `EXA_API_KEY` is not set, the feature will gracefully skip (this is expected)
+    2. Verify your Exa API key is valid at https://exa.ai/
+    3. Check your Exa account has remaining credits
+    4. Add the key to Convex dashboard environment variables (not just `.env.local`)
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+With your environment configured:
+
+- Return to [Installation](/development/installation) to complete setup
+- Learn about the [pipeline architecture](/platform/data-pipeline) that uses these APIs
+- Explore the [Convex functions](/api/persons) to see how environment variables are used

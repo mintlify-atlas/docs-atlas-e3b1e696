@@ -1,0 +1,303 @@
+---
+title: Next.js App Structure
+description: App Router architecture, routing patterns, and page layouts
+icon: 'folder-tree'
+---
+
+## Overview
+
+LORE Timeline uses **Next.js 16** with the **App Router** architecture. The frontend is built with React Server Components and Client Components, optimized for real-time data updates via Convex.
+
+## App Directory Structure
+
+```
+app/
+├── layout.tsx          # Root layout with fonts and providers
+├── page.tsx            # Home page (landing + person search)
+├── globals.css         # Global styles and CSS variables
+└── person/
+    └── [id]/
+        └── page.tsx    # Dynamic person timeline page
+```
+
+## Root Layout
+
+The root layout (`app/layout.tsx`) sets up global fonts, metadata, and the Convex provider wrapper.
+
+<CodeGroup>
+```tsx app/layout.tsx
+import type { Metadata } from "next";
+import { Bebas_Neue, IBM_Plex_Sans } from "next/font/google";
+import "./globals.css";
+import ConvexClientProvider from "@/components/ConvexClientProvider";
+
+const display = Bebas_Neue({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-display",
+});
+
+const body = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-body",
+});
+
+export const metadata: Metadata = {
+  title: "LORE — Interactive Biography Engine",
+  description: "Deep-research biography timelines with era-specific chat.",
+  icons: {
+    icon: "/favicon.png",
+    apple: "/favicon.png",
+  },
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body className={`${display.variable} ${body.variable} antialiased`}>
+        <ConvexClientProvider>{children}</ConvexClientProvider>
+      </body>
+    </html>
+  );
+}
+```
+</CodeGroup>
+
+### Key Features
+
+<CardGroup cols={2}>
+  <Card title="Google Fonts" icon="font">
+    - **Bebas Neue**: Display font for headings (`--font-display`)
+    - **IBM Plex Sans**: Body font with multiple weights (`--font-body`)
+  </Card>
+  
+  <Card title="Provider Wrapper" icon="plug">
+    ConvexClientProvider wraps all pages to enable real-time data queries
+  </Card>
+</CardGroup>
+
+## Home Page
+
+The home page (`app/page.tsx`) is a **Client Component** that displays:
+
+- Hero section with person search input
+- Recently created timelines sidebar with search
+- Feature showcase and pipeline explanation
+- Animated sections using Framer Motion
+
+```tsx app/page.tsx (excerpt)
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+
+export default function HomePage() {
+  const router = useRouter();
+  const createPerson = useMutation(api.persons.createPerson);
+  const people = useQuery(api.persons.listRecentPersons, { limit: 50 }) ?? [];
+
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const result = await createPerson({ name: trimmed });
+    router.push(`/person/${result.personId}`);
+  };
+
+  // ...
+}
+```
+
+### Real-Time Features
+
+- **Live person list**: Updates automatically as new timelines are created
+- **Search filtering**: Client-side filtering with `useMemo` for instant results
+- **Duplicate detection**: Checks if a person already exists before creation
+
+## Dynamic Person Page
+
+The person detail page uses **dynamic routing** with the pattern `/person/[id]`.
+
+<CodeGroup>
+```tsx app/person/[id]/page.tsx
+"use client";
+
+import { use } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
+import { TimelineScroller } from "@/components/TimelineScroller";
+import { ProgressTracker } from "@/components/ProgressTracker";
+
+export default function PersonPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = use(params);
+  const personId = id as Id<"persons">;
+  const data = useQuery(api.persons.getPerson, { personId });
+
+  // Render different UI based on person.status:
+  // - "pending" | "processing" → ProgressTracker
+  // - "failed" → Error state with retry buttons
+  // - "ready" → TimelineScroller with full timeline
+}
+```
+</CodeGroup>
+
+### State Management
+
+The page handles **four distinct states**:
+
+<Tabs>
+  <Tab title="Loading">
+    ```tsx
+    if (data === undefined) {
+      return <PersonSkeleton />;
+    }
+    ```
+    Displays skeleton UI while data loads.
+  </Tab>
+  
+  <Tab title="Not Found">
+    ```tsx
+    if (data === null) {
+      return <NotFoundState />;
+    }
+    ```
+    Shows error message if person doesn't exist.
+  </Tab>
+  
+  <Tab title="Processing">
+    ```tsx
+    if (person.status === "pending" || person.status === "processing") {
+      return <ProgressTracker jobs={jobs} personName={person.name} />;
+    }
+    ```
+    Live progress tracking with phase-by-phase updates.
+  </Tab>
+  
+  <Tab title="Ready">
+    ```tsx
+    if (person.status === "ready") {
+      return <TimelineScroller personId={personId} personName={person.name} />;
+    }
+    ```
+    Full interactive timeline with chat functionality.
+  </Tab>
+</Tabs>
+
+## Routing Patterns
+
+### Static Routes
+
+- **`/`** - Home page with person creation form
+
+### Dynamic Routes
+
+- **`/person/[id]`** - Person timeline page
+  - `id` is a Convex document ID (e.g., `j97h2k3...`)
+  - Uses `use(params)` for async param access (Next.js 15+ pattern)
+
+### Navigation
+
+All navigation uses Next.js `<Link>` and `useRouter` for client-side transitions:
+
+```tsx
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+// Declarative navigation
+<Link href={`/person/${person._id}`}>View Timeline</Link>
+
+// Programmatic navigation
+const router = useRouter();
+router.push(`/person/${result.personId}`);
+```
+
+## Data Fetching
+
+LORE uses **Convex** for real-time data fetching instead of traditional Next.js data patterns.
+
+### Queries (Read)
+
+```tsx
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+
+const data = useQuery(api.persons.getPerson, { personId });
+```
+
+- Queries automatically update when data changes
+- Returns `undefined` while loading, then the data
+
+### Mutations (Write)
+
+```tsx
+import { useMutation } from "convex/react";
+
+const createPerson = useMutation(api.persons.createPerson);
+await createPerson({ name: "Sam Altman" });
+```
+
+### Actions (Server-Side)
+
+```tsx
+import { useAction } from "convex/react";
+
+const sendChat = useAction(api.persons.sendStageChat);
+await sendChat({ personId, stageId, message: "Hello" });
+```
+
+## Performance Optimizations
+
+<CardGroup cols={2}>
+  <Card title="Client Components" icon="bolt">
+    All interactive pages use `"use client"` directive for optimal hydration
+  </Card>
+  
+  <Card title="Image Optimization" icon="image">
+    Next.js `<Image>` component with lazy loading and automatic sizing
+  </Card>
+  
+  <Card title="Lazy Loading" icon="spinner">
+    Components like ChatPanel are conditionally rendered to reduce bundle size
+  </Card>
+  
+  <Card title="Motion Animations" icon="sparkles">
+    Framer Motion with viewport detection for smooth scroll animations
+  </Card>
+</CardGroup>
+
+## Environment Variables
+
+```bash .env.local
+NEXT_PUBLIC_CONVEX_URL=https://your-convex-url.convex.cloud
+```
+
+The Convex URL is exposed to the client via the `NEXT_PUBLIC_` prefix.
+
+## Best Practices
+
+1. **Use `"use client"` sparingly** - Only mark interactive components as client components
+2. **Handle loading states** - Always account for `undefined` while queries load
+3. **Type safety** - Import types from `@/convex/_generated/dataModel`
+4. **Avoid waterfalls** - Fetch data at the page level, not in nested components
+5. **Use `useCallback`** - Memoize event handlers to prevent unnecessary re-renders
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Components" icon="cube" href="/development/components">
+    Explore React components used across the app
+  </Card>
+  
+  <Card title="Styling" icon="palette" href="/development/styling">
+    Learn about Tailwind CSS and design system
+  </Card>
+</CardGroup>

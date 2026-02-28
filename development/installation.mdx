@@ -1,0 +1,183 @@
+---
+title: "Installation"
+description: "Set up LORE Timeline for local development"
+---
+
+## Prerequisites
+
+Before you begin, ensure you have the following installed:
+
+- **Node.js** 18.x or higher (tested with v24.x)
+- **npm**, **pnpm**, or **yarn** package manager
+- **Git** for version control
+
+## Installation Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the LORE Timeline source code to your local machine:
+
+    ```bash
+    git clone <repository-url>
+    cd timeline
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Install all required packages using your preferred package manager:
+
+    <CodeGroup>
+      ```bash npm
+      npm install
+      ```
+
+      ```bash pnpm
+      pnpm install
+      ```
+
+      ```bash yarn
+      yarn install
+      ```
+    </CodeGroup>
+
+    <Note>
+      The project uses `npm-run-all2` to run parallel scripts and includes both Convex backend dependencies and Next.js frontend packages.
+    </Note>
+  </Step>
+
+  <Step title="Set up Convex">
+    LORE Timeline uses Convex as its backend database and server logic platform. Initialize your Convex development environment:
+
+    ```bash
+    npx convex dev --until-success
+    ```
+
+    This command will:
+    - Create a new Convex project (if first time)
+    - Prompt you to log in to your Convex account
+    - Set up the database schema and backend functions
+    - Generate the `convex/_generated` directory with type definitions
+
+    <Warning>
+      Do not commit the `convex/_generated` directory. It's automatically generated and should be in your `.gitignore`.
+    </Warning>
+  </Step>
+
+  <Step title="Configure environment variables">
+    Set up your environment variables for development. See the [Environment Configuration](/development/environment) page for detailed instructions on required API keys.
+
+    Create a `.env.local` file in the project root with your API keys:
+
+    ```bash
+    # Required for AI processing
+    OPENAI_API_KEY=your_openai_api_key_here
+
+    # Optional: Custom OpenAI models
+    OPENAI_MODEL=gpt-5.2
+    OPENAI_EMBED_MODEL=text-embedding-3-small
+
+    # Optional: For enhanced search capabilities
+    EXA_API_KEY=your_exa_api_key_here
+    ```
+  </Step>
+
+  <Step title="Start the development server">
+    Run the development server using the dev script:
+
+    <CodeGroup>
+      ```bash npm
+      npm run dev
+      ```
+
+      ```bash pnpm
+      pnpm dev
+      ```
+
+      ```bash yarn
+      yarn dev
+      ```
+    </CodeGroup>
+
+    This command runs both the Next.js frontend and Convex backend in parallel:
+    - **Frontend**: http://localhost:3000
+    - **Convex Dashboard**: Opens automatically in your browser
+
+    The `dev` script uses `npm-run-all` to execute:
+    - `dev:frontend` - Next.js development server
+    - `dev:backend` - Convex backend with live reloading
+  </Step>
+</Steps>
+
+## Verify Installation
+
+Once the development server is running:
+
+1. Open http://localhost:3000 in your browser
+2. You should see the LORE Timeline application
+3. The Convex dashboard at https://dashboard.convex.dev shows your backend status
+4. Check the terminal for any errors or warnings
+
+<Note>
+  The first time you run the app, Convex will initialize the database schema defined in `convex/schema.ts`. This includes tables for persons, sources, stages, chunks, and timeline data.
+</Note>
+
+## Available Scripts
+
+The project includes several npm scripts for development:
+
+| Script | Command | Description |
+|--------|---------|-------------|
+| `dev` | `npm run dev` | Runs both frontend and backend in parallel |
+| `dev:frontend` | `npm run dev:frontend` | Runs only the Next.js development server |
+| `dev:backend` | `npm run dev:backend` | Runs only the Convex backend |
+| `predev` | `npm run predev` | Sets up Convex and opens dashboard (runs before dev) |
+| `build` | `npm run build` | Builds the production Next.js application |
+| `start` | `npm run start` | Starts the production server |
+| `lint` | `npm run lint` | Runs ESLint on the codebase |
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Convex authentication issues">
+    If you encounter authentication errors with Convex:
+    
+    1. Run `npx convex logout` and `npx convex login` to refresh your session
+    2. Ensure you're logged in to the correct Convex account
+    3. Check that your project is properly linked by running `npx convex dev`
+  </Accordion>
+
+  <Accordion title="Missing OPENAI_API_KEY error">
+    The application requires an OpenAI API key to function. If you see this error:
+    
+    1. Verify your `.env.local` file exists and contains `OPENAI_API_KEY`
+    2. Restart the development server after adding environment variables
+    3. Check that the API key is valid at https://platform.openai.com/api-keys
+  </Accordion>
+
+  <Accordion title="Port already in use">
+    If port 3000 is already in use:
+    
+    ```bash
+    # Use a different port
+    PORT=3001 npm run dev:frontend
+    ```
+    
+    Or stop the process using port 3000 and restart.
+  </Accordion>
+
+  <Accordion title="Module not found errors">
+    If you see module resolution errors:
+    
+    1. Delete `node_modules` and lockfile: `rm -rf node_modules package-lock.json`
+    2. Clear npm cache: `npm cache clean --force`
+    3. Reinstall dependencies: `npm install`
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+Now that your development environment is set up:
+
+- Configure all required [environment variables](/development/environment)
+- Explore the [API reference](/api/persons) to understand the backend functions
+- Read about the [architecture](/platform/architecture) to understand the system design
